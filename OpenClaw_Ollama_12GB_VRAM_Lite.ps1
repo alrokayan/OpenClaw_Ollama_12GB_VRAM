@@ -179,7 +179,12 @@ param(
     ## Run every menu step in order (both editions), non-interactively, writing
     ## full_test_report.md. Implies -Unattended. Ends in the DESTRUCTIVE
     ## uninstall -- only for a throwaway/VM box. See Start-FullTest.
-    [switch]$RunAll
+    [switch]$RunAll,
+
+    ## Launch/relaunch the AVD (cold boot) and exit, without opening the menu.
+    ## Full edition only (needs the emulator); a CLI shortcut for the menu's
+    ## "Launch / relaunch the AVD" item.
+    [switch]$StartAvd
 )
 
 $ErrorActionPreference = "Stop"
@@ -252,7 +257,7 @@ if (-not $script:Edition) { $script:Edition = "Lite" }
 ##  relaunches elevated and switch state is awkward to forward). When on,
 ##  every human wait point degrades to a safe default instead of blocking.
 ## ------------------------------------------------------------
-$Unattended = [bool]$Unattended -or [bool]$RunAll -or ($env:OC_UNATTENDED -eq '1')
+$Unattended = [bool]$Unattended -or [bool]$RunAll -or [bool]$StartAvd -or ($env:OC_UNATTENDED -eq '1')
 
 ## ============================================================
 ##  Helpers
@@ -1375,8 +1380,11 @@ $StepReadme = {
     Add-Line "                       +-->  skill: droidclaw (perception / reason / act)"
     Add-Line '```'
     Add-Line ""
-    Add-Line "The emulator renders in software (``swiftshader_indirect``) on purpose: on a"
-    Add-Line "12 GB card, every megabyte of VRAM belongs to the model."
+    Add-Line "The emulator renders in hardware (``-gpu host``) but is pinned to the **integrated**"
+    Add-Line "GPU (via the Windows per-app graphics preference), so on a 12 GB card every"
+    Add-Line "megabyte of the discrete card's VRAM stays with the model. Software rendering"
+    Add-Line "(``swiftshader_indirect``) was the original plan but drew a blank/white framebuffer"
+    Add-Line "on the build host, so hardware GL on the iGPU is the reliable way to the same goal."
     Add-Line ""
 
     ## ---------------- editions ----------------
@@ -1458,9 +1466,37 @@ $StepReadme = {
     Add-Line "| ``-Unattended`` | off | never block on a human: prompts take their default, no 'press any key', the onboarding TUI is launched detached and killed once it writes config. Set OC_UNATTENDED=1 in the environment to force it |"
     Add-Line "| ``-AutoXapkPath`` | (none) | package the .xapk step installs when unattended, skipping the file picker |"
     Add-Line "| ``-RunAll`` | off | drive every menu step end-to-end, non-interactively, writing ``full_test_report.md``. Implies ``-Unattended`` and ends in the **destructive uninstall** -- VM/throwaway only |"
+    Add-Line "| ``-StartAvd`` | off | launch/relaunch the AVD (cold boot) and exit, without the menu. Full only |"
     Add-Line ""
     Add-Line "``-NumCtx`` is range-validated (4096-262144) and ``-GatewayPort`` (1024-65535), so a"
     Add-Line "typo fails at parse time rather than halfway through configuring the gateway."
+    Add-Line ""
+
+    ## ---------------- launching the AVD ----------------
+    Add-Line "## Launching the AVD"
+    Add-Line ""
+    Add-Line "Two ways to start (or restart) the emulator:"
+    Add-Line ""
+    Add-Line "1. **Via this script** -- the *Launch / relaunch the AVD (cold boot)* menu item,"
+    Add-Line "   or headless:"
+    Add-Line ""
+    Add-Line '```powershell'
+    Add-Line ".\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -StartAvd"
+    Add-Line '```'
+    Add-Line ""
+    Add-Line "   It stops any running instance (``qemu-system-x86_64`` holds the locks, not the"
+    Add-Line "   ``emulator.exe`` launcher), pins ``emulator.exe`` + ``qemu-system-x86_64.exe`` to the"
+    Add-Line "   **integrated GPU** (Windows per-app graphics preference), and cold-boots with"
+    Add-Line "   ``-gpu host``. The iGPU renders the display; the discrete card's VRAM stays for"
+    Add-Line "   the model."
+    Add-Line ""
+    Add-Line "2. **Via Android Studio** -- open **Device Manager**, and press Play on ``$AvdName``"
+    Add-Line "   (pencil > *Show Advanced Settings* > **Emulated Performance > Graphics =**"
+    Add-Line "   **Hardware - GLES 2.0** to match)."
+    Add-Line ""
+    Add-Line "> Software rendering (``swiftshader_indirect``) drew a blank/white framebuffer on the"
+    Add-Line "> build host (RTX 4070 Ti + i7-13700K): the OS booted but nothing painted. Hardware"
+    Add-Line "> GL pinned to the Intel iGPU renders reliably and keeps the discrete GPU free."
     Add-Line ""
 
     ## ---------------- quick start ----------------
@@ -1506,7 +1542,7 @@ $StepReadme = {
     Add-Line "| --- | --- |"
     Add-Line "| 12 GB VRAM | ``qwen3.5`` (~6.6 GB quantized) leaves ~5 GB for KV cache |"
     Add-Line "| KV cache scales with context | 262144-token window will not fit; capped to 65536 |"
-    Add-Line "| Emulator would compete for VRAM | forced to software rendering |"
+    Add-Line "| Emulator would compete for VRAM | hardware-rendered on the **integrated** GPU, discrete card left for the model |"
     Add-Line "| Small models are weak at tool calling | ``localModelLean`` on, tool surface reduced |"
     Add-Line ""
     Add-Line "If the agent still narrates shell commands instead of calling tools after all"
@@ -2268,6 +2304,11 @@ $script:Items = @(
     @{ Key="xapk";     Group="USE"; Color="Green"; Label="Install an .xapk / .apk onto the AVD"
        Action={ throw $FullOnly }; Enabled={ $false }; Why=$FullOnly }
 
+    ## Placed AFTER xapk (index 10, shows as [-]) so it never shifts the [1]-[0]
+    ## numbering of the steps above. Full swaps in the real launcher by key.
+    @{ Key="launchavd"; Group="USE"; Color="Green"; Label="Launch / relaunch the AVD (cold boot)"
+       Action={ throw $FullOnly }; Enabled={ $false }; Why=$FullOnly }
+
     @{ Key="approve";  Group="USE"; Color="Green"; Label="Approve paired devices"
        Action=$StepApprove
        Enabled={ Test-Path "$Home\.openclaw\devices\paired.json" }
@@ -2631,6 +2672,15 @@ function Start-Menu {
     ## unattended. Same entry point in both editions, so Full's Start-Menu call
     ## routes here too.
     if ($RunAll) { Start-FullTest; return }
+
+    ## -StartAvd: just launch/relaunch the AVD and exit. Runs the launchavd menu
+    ## item (Full's real launcher; Lite's placeholder throws FullOnly).
+    if ($StartAvd) {
+        Update-EnvState
+        $item = $script:Items | Where-Object Key -eq 'launchavd'
+        [void](Invoke-Step -Name $item.Label -Body $item.Action)
+        return
+    }
 
     Write-Host "Checking environment..." -ForegroundColor DarkGray
     Update-EnvState

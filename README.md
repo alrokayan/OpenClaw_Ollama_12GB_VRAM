@@ -52,8 +52,11 @@ The pipeline:
                        +-->  skill: droidclaw (perception / reason / act)
 ```
 
-The emulator renders in software (`swiftshader_indirect`) on purpose: on a
-12 GB card, every megabyte of VRAM belongs to the model.
+The emulator renders in hardware (`-gpu host`) but is pinned to the **integrated**
+GPU (via the Windows per-app graphics preference), so on a 12 GB card every
+megabyte of the discrete card's VRAM stays with the model. Software rendering
+(`swiftshader_indirect`) was the original plan but drew a blank/white framebuffer
+on the build host, so hardware GL on the iGPU is the reliable way to the same goal.
 
 ## Two editions
 
@@ -129,9 +132,35 @@ Override on the command line rather than editing the file:
 | `-Unattended` | off | never block on a human: prompts take their default, no 'press any key', the onboarding TUI is launched detached and killed once it writes config. Set OC_UNATTENDED=1 in the environment to force it |
 | `-AutoXapkPath` | (none) | package the .xapk step installs when unattended, skipping the file picker |
 | `-RunAll` | off | drive every menu step end-to-end, non-interactively, writing `full_test_report.md`. Implies `-Unattended` and ends in the **destructive uninstall** -- VM/throwaway only |
+| `-StartAvd` | off | launch/relaunch the AVD (cold boot) and exit, without the menu. Full only |
 
 `-NumCtx` is range-validated (4096-262144) and `-GatewayPort` (1024-65535), so a
 typo fails at parse time rather than halfway through configuring the gateway.
+
+## Launching the AVD
+
+Two ways to start (or restart) the emulator:
+
+1. **Via this script** -- the *Launch / relaunch the AVD (cold boot)* menu item,
+   or headless:
+
+```powershell
+.\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -StartAvd
+```
+
+   It stops any running instance (`qemu-system-x86_64` holds the locks, not the
+   `emulator.exe` launcher), pins `emulator.exe` + `qemu-system-x86_64.exe` to the
+   **integrated GPU** (Windows per-app graphics preference), and cold-boots with
+   `-gpu host`. The iGPU renders the display; the discrete card's VRAM stays for
+   the model.
+
+2. **Via Android Studio** -- open **Device Manager**, and press Play on `Pixel_5`
+   (pencil > *Show Advanced Settings* > **Emulated Performance > Graphics =**
+   **Hardware - GLES 2.0** to match).
+
+> Software rendering (`swiftshader_indirect`) drew a blank/white framebuffer on the
+> build host (RTX 4070 Ti + i7-13700K): the OS booted but nothing painted. Hardware
+> GL pinned to the Intel iGPU renders reliably and keeps the discrete GPU free.
 
 ## Quick start (recommended)
 
@@ -173,7 +202,7 @@ script:
 | --- | --- |
 | 12 GB VRAM | `qwen3.5` (~6.6 GB quantized) leaves ~5 GB for KV cache |
 | KV cache scales with context | 262144-token window will not fit; capped to 65536 |
-| Emulator would compete for VRAM | forced to software rendering |
+| Emulator would compete for VRAM | hardware-rendered on the **integrated** GPU, discrete card left for the model |
 | Small models are weak at tool calling | `localModelLean` on, tool surface reduced |
 
 If the agent still narrates shell commands instead of calling tools after all
@@ -438,6 +467,7 @@ Lite too, just greyed out. Full swaps the real step in by key.
 | 8 | Run the test suite (diagnostics) | USE | both | OpenClaw is not installed (step 7). |
 | 9 | Run the three agent tests | USE | Full | Full edition only. This step needs the Android emulator. |
 | 0 | Install an .xapk / .apk onto the AVD | USE | Full | Full edition only. This step needs the Android emulator. |
+| - | Launch / relaunch the AVD (cold boot) | USE | both | Full edition only. This step needs the Android emulator. |
 | - | Approve paired devices | USE | both | No paired.json yet. Pair a device from the Control UI or Telegram. |
 | - | Status check | USE | both | always available |
 | - | Open the dashboard (Control UI) | USE | both | OpenClaw is not installed (step 7). |

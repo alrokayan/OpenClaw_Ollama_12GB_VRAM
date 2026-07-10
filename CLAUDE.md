@@ -137,8 +137,8 @@ function Check($name, $cond, $detail='') {
 }
 
 $ExpectedKeys = @('prereqs','hyperv','verify','android','ollama','token','openclaw',
-                  'suite','agent','xapk','approve','status','dashboard','docs','uninstall')
-$FullOnlyKeys = @('hyperv','verify','android','agent','xapk')
+                  'suite','agent','xapk','launchavd','approve','status','dashboard','docs','uninstall')
+$FullOnlyKeys = @('hyperv','verify','android','agent','xapk','launchavd')
 
 # A synthetic "everything present" env, to prove Enabled predicates flip on.
 $FullEnv = @{}
@@ -168,7 +168,7 @@ foreach ($g in 'README.md','LICENSE','.gitignore','env.example') {
 Write-Host "`n== Phase 2: LITE menu (headless) ==" -ForegroundColor Cyan
 $global:OC_NoAutoStart = $true
 . $Lite
-Check "Lite has 15 items" ($script:Items.Count -eq 15) "got $($script:Items.Count)"
+Check "Lite has 16 items" ($script:Items.Count -eq 16) "got $($script:Items.Count)"
 $keys = $script:Items | ForEach-Object { $_.Key }
 Check "Lite keys/order match" (@(Compare-Object $keys $ExpectedKeys -SyncWindow 0).Count -eq 0)
 foreach ($it in $script:Items) {
@@ -202,7 +202,7 @@ $tmp = Join-Path $Repo '.__full_headless_test.ps1'   # in repo so $PSScriptRoot 
 try {
     $global:OC_EntryScript = $null; $global:OC_Features = $null
     . $tmp
-    Check "Full has 15 items" ($script:Items.Count -eq 15)
+    Check "Full has 16 items" ($script:Items.Count -eq 16)
     $get = { param($k) $script:Items | Where-Object Key -eq $k }
     foreach ($k in $FullOnlyKeys) {
         Check "Full '$k' Action rewired (not placeholder)" ((& $get $k).Action.ToString() -notmatch 'throw \$FullOnly')
@@ -236,12 +236,16 @@ Check "StepUninstall uses Read-Prompt"      ($StepUninstall.ToString() -match 'R
 Check "StepOpenClaw handles unattended TUI" ($StepOpenClaw.ToString()  -match '\$Unattended')
 Check "StepAndroid handles unattended"      ($StepAndroid.ToString()   -match '\$Unattended')
 Check "StepXapk uses AutoXapkPath"          ($StepXapk.ToString()      -match 'AutoXapkPath')
+# AVD launch: -StartAvd param, iGPU pinning, hardware GL.
+Check "Lite param -StartAvd"                 ($p.ContainsKey('StartAvd'))
+Check "Set-EmulatorGpuPreference defined"    ([bool](Get-Command Set-EmulatorGpuPreference -EA SilentlyContinue))
+Check "StepLaunchAvd pins iGPU + -gpu host"  (($StepLaunchAvd.ToString() -match 'Set-EmulatorGpuPreference') -and ($StepLaunchAvd.ToString() -match "'host'"))
 
 Write-Host "`n== soft-test: $pass passed, $fail failed ==" -ForegroundColor (@('Green','Red')[[int]($fail -gt 0)])
 if ($fail -gt 0) { exit 1 }
 ```
 
-Expected on a clean tree: **55 passed, 0 failed**. A new menu item, a renamed
+Expected on a clean tree: **61 passed, 0 failed**. A new menu item, a renamed
 key, a broken `Enabled`/`Why`, a non-ASCII byte, an accidental BOM, generator
 drift, or a broken unattended path each turns a line red.
 

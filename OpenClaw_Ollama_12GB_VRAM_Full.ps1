@@ -21,10 +21,14 @@
 
     WHAT FULL ADDS
 
-      Emulator  A Pixel_5 AVD with software rendering
-                (swiftshader_indirect), 4 vCPUs, 3 GB RAM, 16 GB disk, no
-                skin, snapshots fully disabled. Software rendering is
-                deliberate: on a 12 GB card the GPU belongs to the model.
+      Emulator  A Pixel_5 AVD, hardware-rendered (-gpu host) but pinned to
+                the INTEGRATED GPU via the Windows per-app graphics preference
+                (Set-EmulatorGpuPreference), 4 vCPUs, 3 GB RAM, 16 GB disk, no
+                skin, snapshots fully disabled. Rendering on the iGPU keeps the
+                discrete card's VRAM entirely for the model -- the same goal as
+                software rendering, but software (swiftshader_indirect) drew a
+                blank/white framebuffer on the build host, so hardware GL on the
+                iGPU is the reliable way to get there.
                 Cold boot is the price of disabling snapshots, and
                 disabling them is what removes the "Bug report interrupted
                 by snapshot load" popup at its source. Quick boot IS
@@ -125,7 +129,8 @@ param(
     ## destructive uninstall), -AutoXapkPath feeds the .xapk step headlessly.
     [switch]$Unattended,
     [string]$AutoXapkPath = "",
-    [switch]$RunAll
+    [switch]$RunAll,
+    [switch]$StartAvd
 )
 
 $ErrorActionPreference = "Stop"
@@ -238,6 +243,33 @@ $StepVerifyHyperV = {
         Write-Host "WHPX acceleration confirmed." -ForegroundColor Green
     } else {
         Write-Host "emulator not on PATH yet -- run step [4], then re-check." -ForegroundColor Yellow
+    }
+}
+
+## ============================================================
+##  Pin the emulator's renderer to the INTEGRATED GPU
+##
+##  Windows routes each app to a GPU via a per-exe preference in
+##  HKCU\...\DirectX\UserGpuPreferences: "GpuPreference=1" = power saving =
+##  the integrated GPU, "=2" = high performance = the discrete card. Pinning
+##  emulator.exe AND its real renderer qemu-system-x86_64.exe to the iGPU is
+##  what lets the AVD render hardware-accelerated on the Intel/AMD iGPU while
+##  the discrete GPU's VRAM stays 100% for the model -- the whole point on a
+##  12 GB card. On a machine with no iGPU, "power saving" maps to the only GPU:
+##  harmless. This is the OS-level half of "use hardware GL"; '-gpu host' +
+##  hw.gpu.mode=host is the emulator half.
+## ============================================================
+function Set-EmulatorGpuPreference {
+    $emuDir = "$env:LOCALAPPDATA\Android\Sdk\emulator"
+    $exes = @("$emuDir\emulator.exe",
+              "$emuDir\qemu\windows-x86_64\qemu-system-x86_64.exe")
+    $key = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+    if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+    foreach ($exe in $exes) {
+        if (Test-Path $exe) {
+            New-ItemProperty -Path $key -Name $exe -Value 'GpuPreference=1;' -PropertyType String -Force | Out-Null
+            Write-Host ">>> Pinned to integrated GPU: $(Split-Path $exe -Leaf)" -ForegroundColor DarkGray
+        }
     }
 }
 
@@ -381,11 +413,16 @@ $StepAndroid = {
         'hw.device.manufacturer=Google',
         'hw.device.name=pixel_5',
         'hw.gps=yes',
-        # Software rendering. This is the Device Manager "Graphics" setting.
-        # The in-emulator Settings > Advanced control is a RUNTIME override that
-        # resets to auto on reboot; config.ini plus the -gpu launch flag persist.
+        # Hardware rendering (Device Manager "Graphics" = Hardware - GLES).
+        # Software 'swiftshader_indirect' rendered a BLANK/white framebuffer on
+        # the build host (RTX 4070 Ti + i7-13700K) -- the OS booted but nothing
+        # painted, breaking the vision loop. Hardware GL renders reliably, and
+        # Set-EmulatorGpuPreference below pins it to the INTEGRATED GPU so the
+        # discrete card's VRAM stays entirely for the model. The in-emulator
+        # Settings > Advanced control is a RUNTIME override that resets to auto
+        # on reboot; config.ini plus the -gpu launch flag persist.
         'hw.gpu.enabled=yes',
-        'hw.gpu.mode=swiftshader_indirect',
+        'hw.gpu.mode=host',
         'hw.gyroscope=yes',
         'hw.initialOrientation=portrait',
         'hw.keyboard=yes',
@@ -418,9 +455,10 @@ $StepAndroid = {
 
     ## Start-Process, not "& emulator.exe": a console-attached launch ties the
     ## emulator's lifetime to this window.
+    Set-EmulatorGpuPreference   # render on the iGPU, keep the dGPU for the model
     Write-Host ">>> Launching $AvdName (detached)..." -ForegroundColor Green
     Start-Process -FilePath "$emulatorPath\emulator.exe" `
-        -ArgumentList '-avd',$AvdName,'-gpu','swiftshader_indirect',
+        -ArgumentList '-avd',$AvdName,'-gpu','host',
                       '-no-snapshot','-no-snapshot-save','-no-snapshot-load',
                       '-no-boot-anim','-no-metrics' `
         -WindowStyle Hidden
@@ -582,6 +620,55 @@ $StepXapk = {
 }
 
 ## ============================================================
+##  Launch / relaunch the AVD (cold boot)
+##
+##  Kills any running instance -- qemu-system-x86_64 holds the AVD's file
+##  locks, NOT the emulator.exe launcher, so both are stopped -- then re-pins to
+##  the integrated GPU and cold-boots fresh. This is the fix when the emulator
+##  hangs on a white boot screen. Plain cold boot, no data wipe; if a boot is
+##  truly stuck, add '-wipe-data' to the args below. Launch (iGPU pin + -gpu
+##  host + flags) mirrors StepAndroid's.
+## ============================================================
+$StepLaunchAvd = {
+    $ErrorActionPreference = 'Continue'   # adb/emulator stderr is benign; gate on results
+    $sdk = "$env:LOCALAPPDATA\Android\Sdk"
+    $emu = "$sdk\emulator\emulator.exe"
+    if (-not (Test-Path $emu)) { throw "emulator not found at $emu. Run step [4] first." }
+    $adb = "$sdk\platform-tools\adb.exe"
+    if (-not (Test-Path $adb)) { $adb = (Get-Command adb -ErrorAction SilentlyContinue).Source }
+    if (-not $adb) { throw "adb not found. Run step [4] or add adb to PATH." }
+
+    Write-Host ">>> Stopping any running AVD (qemu-system + launcher)..." -ForegroundColor Cyan
+    Get-Process qemu-system-* -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process emulator*     -ErrorAction SilentlyContinue | Stop-Process -Force
+    & $adb kill-server  2>$null
+    & $adb start-server 2>$null
+    Start-Sleep -Seconds 2
+
+    Set-EmulatorGpuPreference   # render on the iGPU, keep the dGPU for the model
+    Write-Host ">>> Cold-booting $AvdName..." -ForegroundColor Green
+    Start-Process -FilePath $emu `
+        -ArgumentList '-avd',$AvdName,'-gpu','host',
+                      '-no-snapshot','-no-snapshot-save','-no-snapshot-load',
+                      '-no-boot-anim','-no-metrics' `
+        -WindowStyle Hidden
+
+    ## Poll getprop, never 'adb wait-for-device' (blocks forever with no timeout).
+    Write-Host ">>> Waiting for Android to finish booting..." -ForegroundColor Cyan
+    $booted = ""; $deadline = (Get-Date).AddMinutes(8)
+    while ((Get-Date) -lt $deadline) {
+        $booted = (& $adb shell getprop sys.boot_completed 2>$null | Out-String).Trim()
+        if ($booted -eq "1") { break }
+        Start-Sleep -Seconds 5
+    }
+    if ($booted -ne "1") {
+        throw "AVD did not finish booting in 8 min. If it hangs on a white screen, relaunch with -wipe-data."
+    }
+    Write-Host ">>> AVD booted." -ForegroundColor Green
+    & $adb devices
+}
+
+## ============================================================
 ##  4. Swap the placeholders for the real steps.
 ##
 ##     The menu list itself lives in Lite and is NOT rebuilt here. That
@@ -624,6 +711,11 @@ Set-MenuItem -Key "xapk" `
     -Action $StepXapk `
     -Enabled { $script:Env.Adb -and $script:Env.Device } `
     -Why "No device attached. Start the AVD (step 4)."
+
+Set-MenuItem -Key "launchavd" `
+    -Action $StepLaunchAvd `
+    -Enabled { $script:Env.Avd } `
+    -Why "No AVD yet. Create it with step 4."
 
 ## ============================================================
 ##  5. Go.
