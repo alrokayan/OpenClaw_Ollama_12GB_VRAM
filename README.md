@@ -254,10 +254,16 @@ thrown away. **Read the CLI reference before writing tooling.**
 
 ### Context window
 
-Two numbers must move together:
+Three numbers are set equal (`65536`) so they cannot diverge:
 
-- `contextWindow` -- OpenClaw's prompt/compaction budget
+- `contextTokens` -- the effective budget OpenClaw compacts against (schema
+  field; it takes precedence over `contextWindow` at runtime)
+- `contextWindow` -- the model's advertised window
 - `params.num_ctx` -- what Ollama actually allocates in VRAM
+
+Keeping all three equal is the zero-risk stance: there is no gap between what
+OpenClaw thinks it has and what Ollama allocated, so no silent overflow -- letting
+`contextWindow` float to the native window is a separate, gateway-verified change.
 
 Onboarding reported a 262144-token window while `ollama ps` showed `CONTEXT 16384`.
 OpenClaw believed it had 16x the room Ollama had allocated, and the tail of every
@@ -364,10 +370,12 @@ Nothing in this file is duplicated there.
 WHY THE CONTEXT IS CAPPED
 
 qwen3.5 advertises a 262144-token window. That KV cache does not fit a
-12 GB card. Two numbers must move together: contextWindow (OpenClaw's
-prompt budget) and params.num_ctx (what Ollama actually allocates). Set
-only one and OpenClaw believes it has room Ollama never gave it, and
-the tail of every prompt is silently truncated.
+12 GB card. Three numbers are set equal so they cannot diverge:
+contextTokens (the effective budget OpenClaw compacts against),
+contextWindow (the advertised window), and params.num_ctx (what Ollama
+actually allocates). Let any exceed num_ctx and OpenClaw believes it has
+room Ollama never gave it, and the tail of every prompt is silently
+truncated.
 
 "openclaw doctor --fix" also raises num_ctx back to the advertised
 window. The cap is re-applied afterwards, then verified with
@@ -454,6 +462,7 @@ Telegram window.
 - telegram token in gateway env
 - compat.supportsTools = true
 - num_ctx capped to $NumCtx
+- contextTokens capped to $NumCtx
 - gateway reachable
 - model responds (direct)
 - model responds (via gateway)

@@ -49,7 +49,8 @@ Android-only step scriptblocks, swaps them into the shared menu **by key** with
 2. **Respect the invariants in README's "Findings".** They fail *silently*:
    ASCII-only source; UTF-8-no-BOM writes via `[IO.File]::WriteAllText`; never
    hand-edit `openclaw.json`; the array-merge trap (merge `models` by `id`);
-   `num_ctx` and `contextWindow` move together; token in `~/.openclaw/.env`;
+   `num_ctx`, `contextTokens`, and `contextWindow` all set equal (per-model);
+   token in `~/.openclaw/.env`;
    `cmd.exe /c npx` for MCP; `ConvertTo-Json -Depth 10`; `Add-Member` for absent
    keys; `skills.limits` not `skills.load.limits`. **Re-read that section before
    editing any config-writing or file-writing code.**

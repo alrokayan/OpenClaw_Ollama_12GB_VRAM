@@ -26,10 +26,12 @@
     WHY THE CONTEXT IS CAPPED
 
     qwen3.5 advertises a 262144-token window. That KV cache does not fit a
-    12 GB card. Two numbers must move together: contextWindow (OpenClaw's
-    prompt budget) and params.num_ctx (what Ollama actually allocates). Set
-    only one and OpenClaw believes it has room Ollama never gave it, and
-    the tail of every prompt is silently truncated.
+    12 GB card. Three numbers are set equal so they cannot diverge:
+    contextTokens (the effective budget OpenClaw compacts against),
+    contextWindow (the advertised window), and params.num_ctx (what Ollama
+    actually allocates). Let any exceed num_ctx and OpenClaw believes it has
+    room Ollama never gave it, and the tail of every prompt is silently
+    truncated.
 
     "openclaw doctor --fix" also raises num_ctx back to the advertised
     window. The cap is re-applied afterwards, then verified with
@@ -137,9 +139,9 @@ param(
 
     [string]$Model = "qwen3.5:latest",
 
-    ## contextWindow and num_ctx move together or the prompt is silently
-    ## truncated. 65536 is what fits a 12 GB card once the model is loaded.
-    ## Drop to 32768 if "ollama ps" stops reporting 100% GPU.
+    ## contextTokens, contextWindow, and num_ctx are all set to this, or the
+    ## prompt is silently truncated. 65536 is what fits a 12 GB card once the
+    ## model is loaded. Drop to 32768 if "ollama ps" stops reporting 100% GPU.
     [ValidateRange(4096, 262144)]
     [int]$NumCtx = 65536,
 
@@ -855,10 +857,19 @@ Use this skill when the user requests tasks on an Android device: opening apps, 
     ## 'config patch' REPLACES arrays, and models.providers.<id>.models is a
     ## protected path. 'config set --merge' merges by id instead, preserving
     ## compat.supportsTools, reasoning, cost, and sibling models like gemma4.
-    ## contextWindow (OpenClaw's budget) and num_ctx (Ollama's allocation) must
-    ## move together, or OpenClaw thinks it has room Ollama never allocated.
+    ## Three numbers must agree, or OpenClaw thinks it has room Ollama never
+    ## allocated and the prompt tail is silently truncated:
+    ##   contextTokens -- the effective runtime budget OpenClaw compacts against
+    ##                    (schema field; per src/agents/context-resolution.ts it
+    ##                    takes precedence over contextWindow: contextTokens ??
+    ##                    contextWindow)
+    ##   contextWindow -- the model's advertised window (kept equal here so the
+    ##                    two never diverge -- the zero-risk stance; letting it
+    ##                    float to native is a separate, VM-verified change)
+    ##   params.num_ctx -- what Ollama actually allocates in VRAM
+    ## All set to $NumCtx (what fits a 12 GB card).
     Write-Host "`n>>> Capping context to $NumCtx" -ForegroundColor Cyan
-    $entry = "[{`"id`":`"$Model`",`"contextWindow`":$NumCtx,`"maxTokens`":8192,`"params`":{`"num_ctx`":$NumCtx,`"keep_alive`":`"15m`"}}]"
+    $entry = "[{`"id`":`"$Model`",`"contextWindow`":$NumCtx,`"contextTokens`":$NumCtx,`"maxTokens`":8192,`"params`":{`"num_ctx`":$NumCtx,`"keep_alive`":`"15m`"}}]"
     openclaw config set models.providers.ollama.models $entry --strict-json --merge
     openclaw config set models.providers.ollama.contextWindow $NumCtx --strict-json
 
@@ -870,9 +881,10 @@ Use this skill when the user requests tasks on an Android device: opening apps, 
 
     openclaw doctor --fix
 
-    ## doctor raises num_ctx back to the model's full 262144. Clamp it again.
-    Write-Host "`n>>> Re-clamping num_ctx (doctor raises it)" -ForegroundColor Cyan
-    openclaw config set models.providers.ollama.models "[{`"id`":`"$Model`",`"params`":{`"num_ctx`":$NumCtx}}]" --strict-json --merge
+    ## doctor raises num_ctx back to the model's full 262144. Clamp it again,
+    ## and re-assert contextTokens alongside it so all three stay equal.
+    Write-Host "`n>>> Re-clamping num_ctx + contextTokens (doctor raises them)" -ForegroundColor Cyan
+    openclaw config set models.providers.ollama.models "[{`"id`":`"$Model`",`"contextTokens`":$NumCtx,`"params`":{`"num_ctx`":$NumCtx}}]" --strict-json --merge
 
     openclaw gateway restart
     foreach ($i in 1..30) {
@@ -1012,6 +1024,12 @@ $StepSuite = {
         $m.params.num_ctx -eq $NumCtx
     } "doctor --fix raises this to 262144. Re-clamp it."
 
+    Test-Case "contextTokens capped to $NumCtx" {
+        $json = openclaw config get models.providers.ollama.models --json 2>$null | Out-String
+        $m = ($json | ConvertFrom-Json) | Where-Object { $_.id -eq $Model }
+        $m.contextTokens -eq $NumCtx
+    } "The effective budget OpenClaw compacts against; must equal num_ctx."
+
     Write-Rule "runtime" DarkCyan
 
     Test-Case "gateway reachable" {
@@ -1029,7 +1047,7 @@ $StepSuite = {
 
     Test-Case "model loaded on GPU, not CPU" {
         (ollama ps 2>$null | Out-String) -match '100% GPU'
-    } "KV cache spilled to CPU. Lower num_ctx AND contextWindow together."
+    } "KV cache spilled to CPU. Lower num_ctx (and contextTokens/contextWindow with it)."
 
     if ($Features.Mcp -or $Features.DroidClaw) {
         Write-Rule "tools" DarkCyan
@@ -1206,6 +1224,7 @@ $StepStatus = {
                 $m = $models | Where-Object { $_.id -eq $Model }
                 Row "compat.supportsTools" "$($m.compat.supportsTools)" ($m.compat.supportsTools -eq $true)
                 Row "num_ctx"       "$($m.params.num_ctx)"    ($m.params.num_ctx -eq $NumCtx)
+                Row "contextTokens" "$($m.contextTokens)"     ($m.contextTokens -eq $NumCtx)
                 Row "contextWindow" "$($m.contextWindow)"     ($m.contextWindow -eq $NumCtx)
             } catch {
                 Row "models array" "unreadable" $false
@@ -1574,10 +1593,16 @@ $StepReadme = {
 
     Add-Line "### Context window"
     Add-Line ""
-    Add-Line "Two numbers must move together:"
+    Add-Line "Three numbers are set equal (``$NumCtx``) so they cannot diverge:"
     Add-Line ""
-    Add-Line "- ``contextWindow`` -- OpenClaw's prompt/compaction budget"
+    Add-Line "- ``contextTokens`` -- the effective budget OpenClaw compacts against (schema"
+    Add-Line "  field; it takes precedence over ``contextWindow`` at runtime)"
+    Add-Line "- ``contextWindow`` -- the model's advertised window"
     Add-Line "- ``params.num_ctx`` -- what Ollama actually allocates in VRAM"
+    Add-Line ""
+    Add-Line "Keeping all three equal is the zero-risk stance: there is no gap between what"
+    Add-Line "OpenClaw thinks it has and what Ollama allocated, so no silent overflow -- letting"
+    Add-Line "``contextWindow`` float to the native window is a separate, gateway-verified change."
     Add-Line ""
     Add-Line "Onboarding reported a 262144-token window while ``ollama ps`` showed ``CONTEXT 16384``."
     Add-Line "OpenClaw believed it had 16x the room Ollama had allocated, and the tail of every"
