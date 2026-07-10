@@ -24,6 +24,12 @@ openclaw.json.*
 *.apks
 *.obb
 
+# Logs -----------------------------------------------------------------
+# Per-step transcripts written by Invoke-Step. Can capture tokens echoed
+# by openclaw/adb output, so never commit them.
+logs/
+*.log
+
 # Windows / editors ----------------------------------------------------
 Thumbs.db
 desktop.ini

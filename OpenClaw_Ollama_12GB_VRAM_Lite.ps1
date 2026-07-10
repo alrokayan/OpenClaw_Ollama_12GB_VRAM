@@ -196,6 +196,12 @@ $RepoRaw       = "https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12
 $BaseDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $EnvFile = Join-Path $BaseDir "env"
 
+## Every menu step is transcribed here, one file per run. The folder is
+## gitignored (transcripts can capture tokens echoed by openclaw/adb output),
+## created on demand by Invoke-Step, and never committed. Kept next to the
+## script so a failed run leaves a readable trail where you launched it.
+$LogDir = Join-Path $BaseDir "logs"
+
 ## ============================================================
 ##  Feature flags
 ##
@@ -450,6 +456,22 @@ function Patch {
 function Invoke-Step {
     param([string]$Name, [scriptblock]$Body)
     Clear-Host
+
+    ## Transcribe the whole step to .\logs\ . Best-effort: a logging failure
+    ## (locked dir, transcription unsupported in the host) must never abort a
+    ## real step, so every transcript call is guarded and $logFile falls back to
+    ## $null. Started before the banner so the log includes it.
+    $logFile = $null
+    try {
+        if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+        $slug = ($Name -replace '[^A-Za-z0-9]+', '-').Trim('-').ToLower()
+        if (-not $slug) { $slug = "step" }
+        $logFile = Join-Path $LogDir ("{0}_{1}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $slug)
+        Start-Transcript -Path $logFile -Force -ErrorAction Stop | Out-Null
+    } catch {
+        $logFile = $null
+    }
+
     Write-Host ""
     Write-Host "  +--------------------------------------------------------------+" -ForegroundColor DarkCyan
     Write-Host "  | " -ForegroundColor DarkCyan -NoNewline
@@ -481,6 +503,13 @@ function Invoke-Step {
     }
     Write-Host "$Name " -ForegroundColor Gray -NoNewline
     Write-Host ("({0:mm}m {0:ss}s)" -f $sw.Elapsed) -ForegroundColor DarkGray
+
+    ## Close the transcript before the pause so the file is flushed and the path
+    ## is printed for the operator. Guarded: Stop-Transcript throws if none runs.
+    if ($logFile) {
+        try { Stop-Transcript | Out-Null } catch { }
+        Write-Host "  log: $logFile" -ForegroundColor DarkGray
+    }
 
     Write-Host ""
     Write-Host "  Press any key to return to the menu..." -ForegroundColor DarkGray
@@ -1742,6 +1771,12 @@ openclaw.json.*
 *.xapk
 *.apks
 *.obb
+
+# Logs -----------------------------------------------------------------
+# Per-step transcripts written by Invoke-Step. Can capture tokens echoed
+# by openclaw/adb output, so never commit them.
+logs/
+*.log
 
 # Windows / editors ----------------------------------------------------
 Thumbs.db
