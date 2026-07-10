@@ -8,11 +8,10 @@ env
 secrets
 secrets.*
 
-# OpenClaw state. These contain plaintext gateway and device tokens.
+# OpenClaw config snapshots this script leaves behind.
+# These can contain a plaintext gateway token.
 openclaw.json
 openclaw.json.*
-paired.json
-paired.json.*
 *.post-ollama-launch
 *.rejected.*
 *.clobbered.*
