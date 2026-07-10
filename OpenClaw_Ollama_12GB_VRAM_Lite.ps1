@@ -1952,7 +1952,7 @@ TELEGRAM_BOT_TOKEN=1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ## ============================================================
 $StepUninstall = {
     Write-Host "This deletes ~/.openclaw and ~/.android (your AVDs)." -ForegroundColor Red
-    Write-Host "None of it is recoverable." -ForegroundColor Red
+    Write-Host "~/.openclaw is backed up first; ~/.android (AVD disk images) is NOT." -ForegroundColor Red
     Write-Host ""
     ## Unattended answers proceed with the teardown but KEEP the expensive /
     ## machine-wide bits, so -RunAll is repeatable: models stay (no 6.6 GB
@@ -1965,6 +1965,19 @@ $StepUninstall = {
     $keepHyperV  = (Read-Prompt "Keep Hyper-V (WSL2 and Docker need it too)? (Y/n)" "y") -ne 'n'
 
     $ErrorActionPreference = 'Continue'   # most of these fail if not installed
+
+    ## Safety net (encodes the manual backup done during live testing): the
+    ## deletes below are irreversible, and ~/.openclaw holds the gateway token
+    ## and paired-device records -- the one truly irreplaceable part. Copy it to
+    ## a timestamped sibling BEFORE anything is stopped or removed. Small and
+    ## best-effort; ~/.android is left alone (GBs, and recreatable via step 4).
+    $ocDir = "$env:USERPROFILE\.openclaw"
+    if (Test-Path $ocDir) {
+        $ocBackup = "$ocDir.backup.$(Get-Date -Format yyyyMMdd-HHmmss)"
+        Copy-Item $ocDir $ocBackup -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "`nBacked up ~/.openclaw -> $ocBackup" -ForegroundColor Cyan
+        Write-Host "(holds tokens -- delete it once you no longer need to restore)" -ForegroundColor DarkGray
+    }
 
     ## Stop everything holding file locks BEFORE deleting, or the deletes
     ## silently half-fail.
