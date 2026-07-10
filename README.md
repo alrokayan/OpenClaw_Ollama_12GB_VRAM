@@ -126,6 +126,9 @@ Override on the command line rather than editing the file:
 | `-NoDashboard` | off | omit the controlUi block from openclaw.json |
 | `-LicenseHolder` | `Mohammed Alrokayan` | written into LICENSE |
 | `-NoElevate` | off | skip the Administrator relaunch prompt |
+| `-Unattended` | off | never block on a human: prompts take their default, no 'press any key', the onboarding TUI is launched detached and killed once it writes config. Set OC_UNATTENDED=1 in the environment to force it |
+| `-AutoXapkPath` | (none) | package the .xapk step installs when unattended, skipping the file picker |
+| `-RunAll` | off | drive every menu step end-to-end, non-interactively, writing `full_test_report.md`. Implies `-Unattended` and ends in the **destructive uninstall** -- VM/throwaway only |
 
 `-NumCtx` is range-validated (4096-262144) and `-GatewayPort` (1024-65535), so a
 typo fails at parse time rather than halfway through configuring the gateway.

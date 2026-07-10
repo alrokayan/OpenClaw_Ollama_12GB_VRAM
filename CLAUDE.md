@@ -212,54 +212,88 @@ try {
     Check "Full openclaw Enabled widened (needs scrcpy)"      ((& $get 'openclaw').Enabled.ToString() -match 'Scrcpy')
 } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
 
+Write-Host "`n== Phase 4: unattended plumbing ==" -ForegroundColor Cyan
+# Full is loaded now, so every step scriptblock (Lite + Android) is in scope.
+$p = (Get-Command $Lite).Parameters
+Check "Lite param -Unattended"   ($p.ContainsKey('Unattended'))
+Check "Lite param -AutoXapkPath" ($p.ContainsKey('AutoXapkPath'))
+Check "Lite param -RunAll"       ($p.ContainsKey('RunAll'))
+Check "Start-FullTest defined"   ([bool](Get-Command Start-FullTest -EA SilentlyContinue))
+Check "Read-Prompt defined"      ([bool](Get-Command Read-Prompt -EA SilentlyContinue))
+# Behavioral: unattended Read-Prompt returns the default instead of blocking.
+$Unattended = $true
+Check "Read-Prompt returns default when unattended" ((Read-Prompt 'proceed?' 'yes') -eq 'yes')
+$Unattended = $false
+# Invoke-Step is unattended-safe: guards the keypress, returns a result object.
+$isDef = (Get-Command Invoke-Step).Definition
+Check "Invoke-Step guards the pause"      ($isDef -match 'if \(-not \$Unattended\)')
+Check "Invoke-Step returns result object" ($isDef -match 'PSCustomObject')
+# Each interactive step body has an unattended branch.
+Check "StepToken uses Read-Prompt"          ($StepToken.ToString()     -match 'Read-Prompt')
+Check "StepUninstall uses Read-Prompt"      ($StepUninstall.ToString() -match 'Read-Prompt')
+Check "StepOpenClaw handles unattended TUI" ($StepOpenClaw.ToString()  -match '\$Unattended')
+Check "StepAndroid handles unattended"      ($StepAndroid.ToString()   -match '\$Unattended')
+Check "StepXapk uses AutoXapkPath"          ($StepXapk.ToString()      -match 'AutoXapkPath')
+
 Write-Host "`n== soft-test: $pass passed, $fail failed ==" -ForegroundColor (@('Green','Red')[[int]($fail -gt 0)])
 if ($fail -gt 0) { exit 1 }
 ```
 
-Expected on a clean tree: **42 passed, 0 failed**. A new menu item, a renamed
-key, a broken `Enabled`/`Why`, a non-ASCII byte, an accidental BOM, or generator
-drift each turns a line red.
+Expected on a clean tree: **55 passed, 0 failed**. A new menu item, a renamed
+key, a broken `Enabled`/`Why`, a non-ASCII byte, an accidental BOM, generator
+drift, or a broken unattended path each turns a line red.
 
-## Command: `start Full Test` — live destructive run (opt-in, Administrator, VM)
+## Command: `start Full Test` — automated end-to-end run (opt-in, VM)
 
-Trigger: the user says **"start Full Test"** and confirms they are at a Windows
-Administrator console they can afford to rebuild. This actually installs
-everything, enables Hyper-V, and runs the irreversible uninstall. **Confirm
-first**, record starting state (`Get-Date`, `$PSVersionTable`, `whoami`, C: free,
-Hyper-V state, whether `~/.openclaw` / `~/.android` / `~/.ollama` exist, GPU +
-driver), and log each step to a `full_test_report.md` artifact. Per-step
-*expected values* are the README **Test suite** and **Status check** sections —
-do not duplicate them; assert against them.
+Trigger: the user says **"start Full Test"**. This is the *live, destructive*
+run — it installs everything, and ends in the **irreversible uninstall**. It is
+driven by the scripts' own **`-RunAll` unattended mode** (see `Start-FullTest`
+in Lite), so it is fire-and-forget except for **one** unavoidable pause: the
+**Android Studio setup wizard**, a GUI with no headless entry point (skipped
+automatically if the SDK command-line tools are already installed). Everything
+else — the menu, `Read-Host` prompts, the "press any key" pauses, the OpenClaw
+onboarding TUI, the `.xapk` picker, and the uninstall confirmations — is
+answered or bypassed automatically.
 
-Walk the menu in order in each edition. Option-by-option operational notes (what
-is unique to the live run, beyond README's expected state):
+**Before running, confirm with the user** that they are on a throwaway / VM box
+they can rebuild, then have them launch (as Administrator, or with UAC disabled):
 
-**Lite** — the five Full-only steps (`hyperv`, `verify`, `android`, `agent`,
-`xapk`) must stay greyed out and throw `$FullOnly` if invoked. `prereqs` installs
-the base winget set (no scrcpy/JDK/ffmpeg). `ollama` pulls the model, no
-scrcpy-mcp. `token` writes `env` + `~/.openclaw/.env`, never the raw token into
-`openclaw.json`. `openclaw` onboarding opens the TUI and blocks until you exit.
-`approve` on a missing `paired.json` must report and not crash. `status`, `docs`,
-`dashboard` must run everywhere. `uninstall` runs **last**.
+```powershell
+# Full edition, fully automated. -RunAll implies -Unattended.
+.\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -RunAll -AutoXapkPath .\Tinder.xapk
 
-**Full** (reboot after `hyperv`) — `prereqs` additionally installs scrcpy,
-OpenJDK 17, ffmpeg. `hyperv` enables exactly the three leaf features (management
-tools stay off). `android` is interactive (SDK wizard), writes the `config.ini`
-with snapshots disabled, launches detached, and polls `getprop sys.boot_completed`
-(never `adb wait-for-device`). `ollama` also installs scrcpy-mcp and relabels.
-`openclaw` also writes the scrcpy MCP server and the DroidClaw skill (UTF-8, no
-BOM). `agent` sends three prompts — if the model narrates instead of calling
-tools, that is a model-tier issue, not a script bug. `xapk` handles plain
-`.apk`, split `.xapk` (`install-multiple`), and `.obb` push; catches ABI
-mismatch. `uninstall` also deletes `~/.android` and kills `qemu-system-x86_64`
-(not just `emulator.exe`).
+# Lite edition:
+.\OpenClaw_Ollama_12GB_VRAM_Lite.ps1 -RunAll
+```
 
-Then the cross-edition checks: menu numbering identical across editions;
-`-NumCtx 32768 -NoDashboard` forwards from Full into Lite; non-elevated Full
-relaunches itself elevated with args intact; both `.ps1` files scan zero
-non-ASCII; a missing Lite makes Full throw a clear version-mismatch error;
-regenerated docs are byte-identical to the committed ones. Finish the report
-with a Bugs / Improvements / Environment summary and ask before opening issues.
+`-RunAll` walks every menu item in order: enabled steps run via the
+unattended-safe `Invoke-Step`; steps whose preconditions are not yet met are
+recorded as **expected skips** (with the menu's reason), not failures. So on a
+fresh machine some steps skip on the first pass — after Hyper-V + the SDK
+wizard, **re-run `-RunAll`** to continue past those gates. It writes
+**`full_test_report.md`** (gitignored) with a PASS/FAIL/SKIP row and duration per
+step; per-step console transcripts land in `logs/`.
+
+What the agent does on this trigger: confirm the VM precondition; note the
+current state (`Get-Date`, `$PSVersionTable`, `whoami`, C: free, Hyper-V state,
+whether `~/.openclaw`/`~/.android`/`~/.ollama` exist, GPU + driver); tell the
+user the exact `-RunAll` command; after each pass, read `full_test_report.md` +
+the relevant `logs/` transcripts and check results against README's **Test
+suite** and **Status check** (the source of per-step expected values — do not
+restate them here); flag any FAIL, then summarize Bugs / Improvements /
+Environment and ask before opening issues.
+
+Unattended behavior worth knowing: uninstall **keeps** `~/.ollama` (no 6.6 GB
+re-pull), prereqs, and Hyper-V, but always removes `~/.openclaw` and
+`~/.android`. `-RunAll` requires the token to already be in `./env` (the token
+step keeps the saved value rather than prompting). The onboarding TUI is
+launched detached and killed once `openclaw.json` appears. If the model narrates
+instead of calling tools in the `agent` step, that is a model-tier issue, not a
+script bug.
+
+The agent **cannot** run this from a Claude Code session (sandboxed, and it is
+destructive). Structural coverage of every option lives in the `soft-test`
+command above; `-RunAll` is what exercises them for real, on the user's box.
 
 ## Deep docs — read on demand
 

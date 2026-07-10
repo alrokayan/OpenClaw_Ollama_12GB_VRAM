@@ -29,6 +29,8 @@ openclaw.json.*
 # by openclaw/adb output, so never commit them.
 logs/
 *.log
+# Per-run report written by -RunAll (Start-FullTest).
+full_test_report.md
 
 # Windows / editors ----------------------------------------------------
 Thumbs.db

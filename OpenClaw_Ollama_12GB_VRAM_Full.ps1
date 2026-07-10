@@ -118,7 +118,14 @@ param(
 
     [switch]$NoDashboard,
     [string]$LicenseHolder = "Mohammed Alrokayan",
-    [switch]$NoElevate
+    [switch]$NoElevate,
+
+    ## Forwarded to Lite. See Lite's help: -Unattended never blocks on a human,
+    ## -RunAll drives every step end-to-end (implies -Unattended, ends in the
+    ## destructive uninstall), -AutoXapkPath feeds the .xapk step headlessly.
+    [switch]$Unattended,
+    [string]$AutoXapkPath = "",
+    [switch]$RunAll
 )
 
 $ErrorActionPreference = "Stop"
@@ -244,6 +251,8 @@ $StepVerifyHyperV = {
 ## ============================================================
 $StepAndroid = {
     $studioExe = "C:\Program Files\Android\Android Studio\bin\studio64.exe"
+    $sdkPath   = "$env:LOCALAPPDATA\Android\Sdk"
+    $sdkManagerBat = "$sdkPath\cmdline-tools\latest\bin\sdkmanager.bat"
 
     if (Test-Path $studioExe) {
         Write-Host ">>> Android Studio already installed." -ForegroundColor Green
@@ -251,21 +260,31 @@ $StepAndroid = {
         winget install Google.AndroidStudio --accept-package-agreements --accept-source-agreements --wait
     }
 
-    if (Test-Path $studioExe) {
-        Write-Host ">>> Launching Android Studio to complete SDK setup..." -ForegroundColor Cyan
-        Start-Process -FilePath $studioExe -Verb RunAs
+    ## The SDK + command-line tools come from the Studio setup wizard -- a GUI
+    ## with no headless entry point, and the ONE thing unattended cannot drive.
+    ## On a re-run the tools are already installed, so skip the wizard entirely.
+    ## Otherwise pause for a human; unattended fails fast with a clear message
+    ## instead of hanging forever on Read-Host.
+    if (Test-Path $sdkManagerBat) {
+        Write-Host ">>> SDK command-line tools already present; skipping the setup wizard." -ForegroundColor Green
+    } else {
+        if (Test-Path $studioExe) {
+            Write-Host ">>> Launching Android Studio to complete SDK setup..." -ForegroundColor Cyan
+            Start-Process -FilePath $studioExe -Verb RunAs
+        }
+        Write-Host ""
+        Write-Host "==========================================================" -ForegroundColor Yellow
+        Write-Host "ACTION REQUIRED: finish the Android Studio Setup Wizard." -ForegroundColor Yellow
+        Write-Host "Then SDK Manager > SDK Tools, enable:" -ForegroundColor Yellow
+        Write-Host "    Android SDK Command-line Tools (latest)" -ForegroundColor Yellow
+        Write-Host "    Google USB Driver" -ForegroundColor Yellow
+        Write-Host "==========================================================" -ForegroundColor Yellow
+        if ($Unattended) {
+            throw "Unattended cannot drive the Android Studio setup wizard (GUI, no headless entry point). Run step [4] once interactively to install the SDK command-line tools, then re-run -RunAll."
+        }
+        Read-Host "Press Enter once SDK setup is complete"
     }
 
-    Write-Host ""
-    Write-Host "==========================================================" -ForegroundColor Yellow
-    Write-Host "ACTION REQUIRED: finish the Android Studio Setup Wizard." -ForegroundColor Yellow
-    Write-Host "Then SDK Manager > SDK Tools, enable:" -ForegroundColor Yellow
-    Write-Host "    Android SDK Command-line Tools (latest)" -ForegroundColor Yellow
-    Write-Host "    Google USB Driver" -ForegroundColor Yellow
-    Write-Host "==========================================================" -ForegroundColor Yellow
-    Read-Host "Press Enter once SDK setup is complete"
-
-    $sdkPath = "$env:LOCALAPPDATA\Android\Sdk"
     if (-not (Test-Path $sdkPath)) { throw "Android SDK not found at $sdkPath. Finish the wizard, then re-run." }
 
     $platformTools = "$sdkPath\platform-tools"
@@ -415,10 +434,20 @@ $StepAndroid = {
 ##  or the app installs and then crashes looking for its assets.
 ## ============================================================
 $StepXapk = {
+    ## Unattended takes the package from -AutoXapkPath (relative paths resolve
+    ## against the script dir), skipping the GUI picker entirely.
+    $XapkPath = $null
+    if ($Unattended) {
+        if ([string]::IsNullOrWhiteSpace($AutoXapkPath)) {
+            throw "Unattended .xapk install needs -AutoXapkPath (e.g. -AutoXapkPath .\Tinder.xapk)."
+        }
+        $XapkPath = if ([IO.Path]::IsPathRooted($AutoXapkPath)) { $AutoXapkPath } else { Join-Path $BaseDir $AutoXapkPath }
+        Write-Host ">>> [auto] Package: $XapkPath" -ForegroundColor DarkGray
+    }
     ## A GUI picker beats typing a Windows path. Falls back to Read-Host if
     ## WinForms is unavailable (Server Core, PS in a non-STA host, etc).
-    $XapkPath = $null
-    try {
+    elseif ($true) {
+      try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
         $dlg = New-Object System.Windows.Forms.OpenFileDialog
         $dlg.Title  = "Pick an .xapk / .apks / .apk"
@@ -435,9 +464,10 @@ $StepXapk = {
             Write-Host "Cancelled." -ForegroundColor Yellow
             return
         }
-    } catch {
+      } catch {
         Write-Host "File picker unavailable; type or drag-and-drop the path." -ForegroundColor DarkGray
         $XapkPath = Read-Host "Full path to the .xapk / .apks / .apk"
+      }
     }
 
     ## Drag-and-drop into a console wraps the path in quotes

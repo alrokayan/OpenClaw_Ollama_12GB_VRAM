@@ -159,7 +159,25 @@ param(
 
     ## Skip the elevation prompt. Most steps fail unelevated; Status check
     ## and the docs generator do not.
-    [switch]$NoElevate
+    [switch]$NoElevate,
+
+    ## Unattended mode: never block on a human. Read-Host prompts return their
+    ## safe default (via Read-Prompt), Invoke-Step drops its "press any key"
+    ## pause, and the OpenClaw onboarding TUI is launched detached and killed
+    ## once it has written its config instead of waiting for you to exit it.
+    ## The ONE thing it cannot bypass is the Android Studio setup wizard (a GUI
+    ## with no headless entry point); that step still pauses unless the SDK is
+    ## already installed. Can also be forced with $env:OC_UNATTENDED = "1".
+    [switch]$Unattended,
+
+    ## Package that the .xapk step installs when unattended, so it does not pop
+    ## a file picker. Relative paths resolve against the script directory.
+    [string]$AutoXapkPath = "",
+
+    ## Run every menu step in order (both editions), non-interactively, writing
+    ## full_test_report.md. Implies -Unattended. Ends in the DESTRUCTIVE
+    ## uninstall -- only for a throwaway/VM box. See Start-FullTest.
+    [switch]$RunAll
 )
 
 $ErrorActionPreference = "Stop"
@@ -225,9 +243,30 @@ $Features = $global:OC_Features
 ## Shown in the banner. Full overrides this before calling Start-Menu.
 if (-not $script:Edition) { $script:Edition = "Lite" }
 
+## ------------------------------------------------------------
+##  Unattended mode
+##
+##  -RunAll implies it. $env:OC_UNATTENDED=1 forces it (useful when Full
+##  relaunches elevated and switch state is awkward to forward). When on,
+##  every human wait point degrades to a safe default instead of blocking.
+## ------------------------------------------------------------
+$Unattended = [bool]$Unattended -or [bool]$RunAll -or ($env:OC_UNATTENDED -eq '1')
+
 ## ============================================================
 ##  Helpers
 ## ============================================================
+
+## Read-Host that cannot block a headless run. Interactively it prompts as
+## usual; unattended it announces and returns $Default, so callers keep their
+## normal "answer or hit the default" control flow with no special-casing.
+function Read-Prompt {
+    param([string]$Prompt, [string]$Default = "")
+    if ($Unattended) {
+        Write-Host "  [auto] $Prompt -> '$Default'" -ForegroundColor DarkGray
+        return $Default
+    }
+    Read-Host $Prompt
+}
 
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -511,9 +550,14 @@ function Invoke-Step {
         Write-Host "  log: $logFile" -ForegroundColor DarkGray
     }
 
-    Write-Host ""
-    Write-Host "  Press any key to return to the menu..." -ForegroundColor DarkGray
-    [void][Console]::ReadKey($true)
+    ## Unattended (e.g. -RunAll) must not wait on a keypress. Return a result the
+    ## runner can record; interactive callers ignore it and just get the pause.
+    if (-not $Unattended) {
+        Write-Host ""
+        Write-Host "  Press any key to return to the menu..." -ForegroundColor DarkGray
+        [void][Console]::ReadKey($true)
+    }
+    [PSCustomObject]@{ Name = $Name; Failed = $failed; Elapsed = $sw.Elapsed; Log = $logFile }
 }
 
 ## ============================================================
@@ -589,7 +633,9 @@ $StepToken = {
         $masked = $existing.Substring(0, [Math]::Min(8, $existing.Length)) + "..."
         Write-Host "A token is already saved: $masked" -ForegroundColor Green
         Write-Host ""
-        if ((Read-Host "Replace it? (y/N)") -ne 'y') { Write-Host "Kept existing token."; return }
+        ## Unattended keeps the saved token (default 'n') -- Set-SavedToken would
+        ## otherwise block on Read-Host for the new value.
+        if ((Read-Prompt "Replace it? (y/N)" "n") -ne 'y') { Write-Host "Kept existing token."; return }
     }
     Set-SavedToken
 }
@@ -622,9 +668,33 @@ $StepOpenClaw = {
     }
 
     ## Ollama onboarding: installs OpenClaw, the gateway Scheduled Task, the
-    ## provider, and starts the gateway. Opens the TUI and blocks.
-    Write-Host ">>> The OpenClaw TUI will open. Exit it (/exit or Ctrl+C) to continue." -ForegroundColor Yellow
-    ollama launch openclaw --model qwen3.5 --yes
+    ## provider, and starts the gateway. Opens the TUI and blocks until you exit,
+    ## even with --yes (documented as headless, but it is not).
+    $cfgDefault = "$Home\.openclaw\openclaw.json"
+    if ($Unattended) {
+        ## Cannot wait on a human to exit the TUI. Launch onboarding detached,
+        ## wait for it to write the config (past that point the TUI is just
+        ## idling), give it a grace window to finish registering the gateway
+        ## task and provider, then end it. Best-effort kill of the launcher and
+        ## the openclaw/node processes it spawned -- the gateway is restarted
+        ## below regardless.
+        Write-Host ">>> [auto] Onboarding detached; ending the TUI once config is written." -ForegroundColor DarkGray
+        $proc = Start-Process ollama -ArgumentList 'launch','openclaw','--model','qwen3.5','--yes' -PassThru -WindowStyle Hidden
+        $deadline = (Get-Date).AddMinutes(5)
+        while ((Get-Date) -lt $deadline) {
+            if ($proc.HasExited) { break }
+            if (Test-Path $cfgDefault) { Start-Sleep -Seconds 15; break }
+            Start-Sleep -Seconds 3
+        }
+        $kill = @($proc.Id)
+        $kill += (Get-Process openclaw*, node -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Path -match 'openclaw' } | Select-Object -ExpandProperty Id)
+        foreach ($id in ($kill | Select-Object -Unique)) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
+        if (-not (Test-Path $cfgDefault)) { throw "Onboarding did not write $cfgDefault within 5 min." }
+    } else {
+        Write-Host ">>> The OpenClaw TUI will open. Exit it (/exit or Ctrl+C) to continue." -ForegroundColor Yellow
+        ollama launch openclaw --model qwen3.5 --yes
+    }
 
     $cfg = (openclaw config file).Trim()
     if (-not (Test-Path $cfg)) { throw "No config at $cfg. Did onboarding fail?" }
@@ -1325,6 +1395,9 @@ $StepReadme = {
     Add-Line "| ``-NoDashboard`` | off | omit the controlUi block from openclaw.json |"
     Add-Line "| ``-LicenseHolder`` | ``$LicenseHolder`` | written into LICENSE |"
     Add-Line "| ``-NoElevate`` | off | skip the Administrator relaunch prompt |"
+    Add-Line "| ``-Unattended`` | off | never block on a human: prompts take their default, no 'press any key', the onboarding TUI is launched detached and killed once it writes config. Set OC_UNATTENDED=1 in the environment to force it |"
+    Add-Line "| ``-AutoXapkPath`` | (none) | package the .xapk step installs when unattended, skipping the file picker |"
+    Add-Line "| ``-RunAll`` | off | drive every menu step end-to-end, non-interactively, writing ``full_test_report.md``. Implies ``-Unattended`` and ends in the **destructive uninstall** -- VM/throwaway only |"
     Add-Line ""
     Add-Line "``-NumCtx`` is range-validated (4096-262144) and ``-GatewayPort`` (1024-65535), so a"
     Add-Line "typo fails at parse time rather than halfway through configuring the gateway."
@@ -1777,6 +1850,8 @@ openclaw.json.*
 # by openclaw/adb output, so never commit them.
 logs/
 *.log
+# Per-run report written by -RunAll (Start-FullTest).
+full_test_report.md
 
 # Windows / editors ----------------------------------------------------
 Thumbs.db
@@ -1832,11 +1907,15 @@ $StepUninstall = {
     Write-Host "This deletes ~/.openclaw and ~/.android (your AVDs)." -ForegroundColor Red
     Write-Host "None of it is recoverable." -ForegroundColor Red
     Write-Host ""
-    if ((Read-Host "Type 'yes' to continue") -ne 'yes') { Write-Host "Aborted."; return }
+    ## Unattended answers proceed with the teardown but KEEP the expensive /
+    ## machine-wide bits, so -RunAll is repeatable: models stay (no 6.6 GB
+    ## re-pull), prereqs stay, Hyper-V stays. openclaw and android are always
+    ## removed regardless -- those are what the test is exercising.
+    if ((Read-Prompt "Type 'yes' to continue" "yes") -ne 'yes') { Write-Host "Aborted."; return }
 
-    $keepModels  = (Read-Host "Keep ~/.ollama (qwen3.5 is 6.6 GB)? (Y/n)") -ne 'n'
-    $keepPrereqs = (Read-Host "Keep node/git/python/jq/scrcpy/ffmpeg? (Y/n)") -ne 'n'
-    $keepHyperV  = (Read-Host "Keep Hyper-V (WSL2 and Docker need it too)? (Y/n)") -ne 'n'
+    $keepModels  = (Read-Prompt "Keep ~/.ollama (qwen3.5 is 6.6 GB)? (Y/n)" "y") -ne 'n'
+    $keepPrereqs = (Read-Prompt "Keep node/git/python/jq/scrcpy/ffmpeg? (Y/n)" "y") -ne 'n'
+    $keepHyperV  = (Read-Prompt "Keep Hyper-V (WSL2 and Docker need it too)? (Y/n)" "y") -ne 'n'
 
     $ErrorActionPreference = 'Continue'   # most of these fail if not installed
 
@@ -2297,9 +2376,88 @@ function Start-Item {
         [Console]::Beep(400, 120)
         return
     }
-    Invoke-Step -Name $item.Label -Body $item.Action
+    ## Invoke-Step now returns a result object (for Start-FullTest); discard it
+    ## here so it does not print after every interactive step.
+    [void](Invoke-Step -Name $item.Label -Body $item.Action)
     ## A step almost always changes state; recompute before the next render
     Update-EnvState
+}
+
+## ============================================================
+##  Start-FullTest -- the -RunAll driver
+##
+##  Walks every menu item in order, non-interactively, and writes
+##  full_test_report.md. Enabled steps run (via Invoke-Step, which is
+##  unattended-safe); disabled steps are recorded as expected-skips with the
+##  reason the menu would show. This is the automated end-to-end run: it
+##  installs, configures, tests, and ENDS IN THE DESTRUCTIVE UNINSTALL, so it
+##  is only for a throwaway / VM box. Preconditions gate each step exactly as
+##  in the menu, so e.g. step 7 will skip (not fail) until its inputs exist --
+##  run -RunAll again after a reboot to continue past Hyper-V/SDK gates.
+## ============================================================
+function Start-FullTest {
+    Write-Host ""
+    Write-Host "  ##############################################################" -ForegroundColor Red
+    Write-Host "  #  -RunAll: UNATTENDED end-to-end test of every menu option. #" -ForegroundColor Red
+    Write-Host "  #  Installs system components AND runs the irreversible      #" -ForegroundColor Red
+    Write-Host "  #  uninstall at the end. Throwaway / VM machines only.        #" -ForegroundColor Red
+    Write-Host "  ##############################################################" -ForegroundColor Red
+    Write-Host ""
+
+    Update-EnvState
+    $started = Get-Date
+    $rows = @()
+
+    for ($i = 0; $i -lt $script:Items.Count; $i++) {
+        $item = $script:Items[$i]
+        $n = if ($i -lt 9) { "$($i + 1)" } elseif ($i -eq 9) { "0" } else { "-" }
+
+        if (-not (& $item.Enabled)) {
+            $why = if ($item.Why -is [scriptblock]) { & $item.Why } else { $item.Why }
+            Write-Host ("  [ skip ] [{0}] {1}" -f $n, $item.Label) -ForegroundColor DarkGray
+            $rows += [PSCustomObject]@{ N=$n; Step=$item.Label; Result="SKIP"; Secs=0; Note=$why; Log="" }
+            continue
+        }
+
+        $r = Invoke-Step -Name $item.Label -Body $item.Action
+        Update-EnvState
+        $rows += [PSCustomObject]@{
+            N=$n; Step=$item.Label
+            Result = if ($r.Failed) { "FAIL" } else { "PASS" }
+            Secs   = [int]$r.Elapsed.TotalSeconds
+            Note   = ""
+            Log    = if ($r.Log) { Split-Path $r.Log -Leaf } else { "" }
+        }
+    }
+
+    ## ---- write the report (UTF-8, no BOM, like every other file) ----
+    $passN = @($rows | Where-Object Result -eq "PASS").Count
+    $failN = @($rows | Where-Object Result -eq "FAIL").Count
+    $skipN = @($rows | Where-Object Result -eq "SKIP").Count
+
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.AppendLine("# Full Test report -- $script:Edition edition")
+    [void]$sb.AppendLine("")
+    [void]$sb.AppendLine("- Started: $started")
+    [void]$sb.AppendLine("- Ended:   $(Get-Date)")
+    [void]$sb.AppendLine("- Host: PowerShell $($PSVersionTable.PSVersion), $([Environment]::MachineName), admin=$([bool](Test-Admin))")
+    [void]$sb.AppendLine("- Result: $passN passed, $failN failed, $skipN skipped (expected)")
+    [void]$sb.AppendLine("")
+    [void]$sb.AppendLine("| # | Step | Result | Secs | Note / skip reason | Log |")
+    [void]$sb.AppendLine("| --- | --- | --- | --- | --- | --- |")
+    foreach ($row in $rows) {
+        $note = ($row.Note -replace '\|', '\|')
+        [void]$sb.AppendLine("| $($row.N) | $($row.Step) | $($row.Result) | $($row.Secs) | $note | $($row.Log) |")
+    }
+    [void]$sb.AppendLine("")
+    [void]$sb.AppendLine("Per-step console transcripts are in ``logs/`` (gitignored).")
+
+    $reportPath = Join-Path $BaseDir "full_test_report.md"
+    [IO.File]::WriteAllText($reportPath, $sb.ToString(), (New-Object Text.UTF8Encoding($false)))
+
+    Write-Host ""
+    Write-Host "  $passN passed, $failN failed, $skipN skipped" -ForegroundColor (@('Green','Red')[[int]($failN -gt 0)])
+    Write-Host "  report: $reportPath" -ForegroundColor Cyan
 }
 
 ## ------------------------------------------------------------
@@ -2357,6 +2515,11 @@ function Request-Elevation {
 
 function Start-Menu {
     [void](Request-Elevation)
+
+    ## -RunAll bypasses the interactive menu entirely and drives every step
+    ## unattended. Same entry point in both editions, so Full's Start-Menu call
+    ## routes here too.
+    if ($RunAll) { Start-FullTest; return }
 
     Write-Host "Checking environment..." -ForegroundColor DarkGray
     Update-EnvState
