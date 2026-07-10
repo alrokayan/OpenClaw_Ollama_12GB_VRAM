@@ -280,14 +280,23 @@ PASS/FAIL/SKIP row and duration per step; per-step console transcripts land in
 `logs/`, and the report is written from a `finally` so it survives a mid-run
 throw.
 
-What the agent does on this trigger: confirm the VM precondition; note the
-current state (`Get-Date`, `$PSVersionTable`, `whoami`, C: free, Hyper-V state,
-whether `~/.openclaw`/`~/.android`/`~/.ollama` exist, GPU + driver); tell the
-user the exact `-RunAll` command; after each pass, read `full_test_report.md` +
-the relevant `logs/` transcripts and check results against README's **Test
-suite** and **Status check** (the source of per-step expected values — do not
-restate them here); flag any FAIL, then summarize Bugs / Improvements /
-Environment and ask before opening issues.
+What the agent does on this trigger: confirm the VM/throwaway precondition;
+**back up `~/.openclaw` first** (see below); note the current state (`Get-Date`,
+`$PSVersionTable`, `whoami`, C: free, Hyper-V state, whether
+`~/.openclaw`/`~/.android`/`~/.ollama` exist, GPU + driver); tell the user the
+exact `-RunAll` command; after each pass, read `full_test_report.md` + the
+relevant `logs/` transcripts and check results against README's **Test suite**
+and **Status check** (the source of per-step expected values — do not restate
+them here); flag any FAIL, then summarize Bugs / Improvements / Environment and
+ask before opening issues.
+
+Backups (part of the procedure — the run deletes `~/.openclaw`): `Start-FullTest`
+copies the *current* `~/.openclaw` → `~/.openclaw.prerun-backup.<ts>` before any
+step runs (protects your original token + paired devices), and `StepUninstall`
+copies it again → `~/.openclaw.backup.<ts>` right before the teardown. Both are
+automatic now. On a real machine still eyeball that the pre-run backup printed,
+and offer to restore it after — `~/.android` (AVDs) is *not* backed up (GBs;
+recreated by step 4).
 
 Unattended behavior worth knowing: uninstall **keeps** `~/.ollama` model files
 (no 6.6 GB re-pull), prereqs, and Hyper-V, but always removes `~/.openclaw` and
@@ -298,9 +307,10 @@ the saved value rather than prompting). The onboarding TUI is launched detached
 and killed once `openclaw.json` appears. If the model narrates instead of calling
 tools in the `agent` step, that is a model-tier issue, not a script bug.
 
-Running it: on a real machine, **back up `~/.openclaw` first** (it holds the
-gateway token + paired devices; the teardown deletes it — `~/.android` is
-recreatable). The agent *can* drive `-RunAll` from a session via a **background**
+Running it: `Start-FullTest` auto-backs-up `~/.openclaw` before it starts (and
+the uninstall backs it up again), so the original token + paired devices survive
+a teardown; `~/.android` is not backed up but is recreatable. The agent *can*
+drive `-RunAll` from a session via a **background**
 `PowerShell` task with **`dangerouslyDisableSandbox: true`** (the sandbox blocks
 the installer subprocesses — you'll see `Connectivity probe: failed` otherwise);
 the Studio wizard pops on the user's screen and the 45-min SDK poll waits for it.

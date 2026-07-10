@@ -2469,6 +2469,19 @@ function Start-FullTest {
     Write-Host "  ##############################################################" -ForegroundColor Red
     Write-Host ""
 
+    ## Preserve the CURRENT ~/.openclaw before anything runs: the openclaw step
+    ## re-onboards over it and the final uninstall deletes it, so the uninstall's
+    ## own backup only catches the throwaway re-onboarded copy -- not what you
+    ## started with. This pre-run copy is the one that protects your original
+    ## token + paired devices. (Encodes the manual pre-run backup from testing.)
+    $ocDir = "$env:USERPROFILE\.openclaw"
+    if (Test-Path $ocDir) {
+        $ocPre = "$ocDir.prerun-backup.$(Get-Date -Format yyyyMMdd-HHmmss)"
+        Copy-Item $ocDir $ocPre -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "  pre-run backup: ~/.openclaw -> $ocPre" -ForegroundColor Cyan
+        Write-Host ""
+    }
+
     ## Update-EnvState spawns native probes (adb, ollama, npm) whose benign
     ## stderr is fatal under Stop; a throw here must not abort the run. Guard
     ## every call, and write the report from a finally so a mid-run throw still
