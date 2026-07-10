@@ -16,8 +16,9 @@ needs and that README does not say.
   hours." When you need to know *why* a value is what it is, that section has it.
 - **Comment-based help** at the top of each `.ps1` (`.SYNOPSIS` / `.DESCRIPTION`
   / `.NOTES`) — the same "why", inline with the code.
-- **`docs/` deep guides** — read the relevant one *before* touching a subsystem
-  (table at the bottom). Do not modify those docs without the user's approval.
+- **Deep docs on the stack** (OpenClaw, Ollama, adb, scrcpy, Android SDK/AVD,
+  QEMU, PowerShell, …) are pulled **on demand via Context7**, not vendored — see
+  *Documentation lookups* at the bottom. (The old `docs/` folder was removed.)
 
 ## How the two scripts compose (the editing model)
 
@@ -327,24 +328,24 @@ Findings from the first live `-RunAll` (all fixed; keep them from regressing):
 - **Report survival:** `Start-FullTest` guards every `Update-EnvState` and writes
   the report in a `finally` — one post-step throw used to lose the whole report.
 
-## Deep docs — read on demand
+## Documentation lookups (Context7)
 
-Not loaded automatically. Read the relevant guide **before** modifying that
-subsystem; do not modify the guides themselves without the user's approval
-(they were sourced from Context7-indexed references and verified upstream).
+The vendored `docs/` guides were **removed**. Instead, pull current,
+version-accurate docs for any technology in the stack **on demand** via
+Context7's `find-docs` skill — OpenClaw, Ollama, adb, scrcpy, scrcpy-mcp,
+Android SDK / AVD, QEMU, Windows 11 / Hyper-V, PowerShell, uiautomator2, and the
+end-to-end integration between them.
 
-| When working on... | Read first |
-|---|---|
-| OpenClaw gateway, config, onboarding | `docs/01-openclawm-developer-guide.md` |
-| Ollama models, Modelfiles, API, VRAM tuning | `docs/02-ollama-developer-guide.md` |
-| PowerShell scripting, modules, error handling | `docs/03-powershell-developer-guide.md` |
-| CMD/batch scripts, quoting, redirection | `docs/04-cmd-batch-developer-guide.md` |
-| ADB commands, device communication, Wi-Fi debug | `docs/05-adb-developer-guide.md` |
-| Android Studio, SDK Manager, AVD lifecycle | `docs/06-android-studio-sdk-avd-guide.md` |
-| QEMU internals, emulator acceleration | `docs/07-qemu-developer-guide.md` |
-| Windows 11 dev environment, Hyper-V, WSL2 | `docs/08-windows11-developer-environment.md` |
-| Scrcpy mirroring, flags, recording | `docs/09-scrcpy-developer-guide.md` |
-| scrcpy-mcp bridge, MCP endpoints | `docs/10-scrcpy-mcp-developer-guide.md` |
-| DroidClaw skill, vision loop, plugins | `docs/11-droidclaw-developer-guide.md` |
-| uiautomator2, element selectors, weditor | `docs/12-uiautomator2-developer-guide.md` |
-| End-to-end integration across all tools | `docs/13-full-stack-integration-reference.md` |
+One-time setup (installs the `find-docs` skill + rule for each agent):
+
+```
+npx ctx7 setup --claude       # Claude Code (this agent)
+npx ctx7 setup --antigravity  # Antigravity / Gemini
+```
+
+Then use the `find-docs` skill to look up a subsystem **before** modifying it.
+**Still verify anything load-bearing against the primary/upstream source** — the
+config-schema audit found Context7's indexed OpenClaw docs *wrong* about
+`skills.limits`, and the ground truth was the binary's own `openclaw config
+schema` / the Zod definitions. Indexed docs are a fast first pass, not the final
+word (see README "Research").
