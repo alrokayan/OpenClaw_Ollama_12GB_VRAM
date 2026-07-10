@@ -269,10 +269,8 @@ $StepAndroid = {
     }
 
     ## The SDK + command-line tools come from the Studio setup wizard -- a GUI
-    ## with no headless entry point, and the ONE thing unattended cannot drive.
-    ## On a re-run the tools are already installed, so skip the wizard entirely.
-    ## Otherwise pause for a human; unattended fails fast with a clear message
-    ## instead of hanging forever on Read-Host.
+    ## with no headless entry point, and the ONE thing that needs a human. On a
+    ## re-run the tools are already installed, so skip the wizard entirely.
     if (Test-Path $sdkManagerBat) {
         Write-Host ">>> SDK command-line tools already present; skipping the setup wizard." -ForegroundColor Green
     } else {
@@ -288,9 +286,22 @@ $StepAndroid = {
         Write-Host "    Google USB Driver" -ForegroundColor Yellow
         Write-Host "==========================================================" -ForegroundColor Yellow
         if ($Unattended) {
-            throw "Unattended cannot drive the Android Studio setup wizard (GUI, no headless entry point). Run step [4] once interactively to install the SDK command-line tools, then re-run -RunAll."
+            ## Unattended still can't click the GUI, but a human can while the run
+            ## waits. Read-Host would need an interactive console (a background /
+            ## -RunAll run has none), so POLL for the SDK to appear instead. This
+            ## keeps the run going hands-off everywhere else while pausing here for
+            ## you to finish the wizard. Generous deadline; throws if it never lands.
+            Write-Host ">>> [auto] Waiting up to 45 min for the SDK command-line tools to appear" -ForegroundColor DarkGray
+            Write-Host ">>>        (finish the wizard + SDK Tools > Command-line Tools)..." -ForegroundColor DarkGray
+            $deadline = (Get-Date).AddMinutes(45)
+            while ((Get-Date) -lt $deadline -and -not (Test-Path $sdkManagerBat)) { Start-Sleep -Seconds 10 }
+            if (-not (Test-Path $sdkManagerBat)) {
+                throw "SDK command-line tools never appeared at $sdkManagerBat. Finish the Studio wizard (SDK Tools > Command-line Tools), then re-run."
+            }
+            Write-Host ">>> SDK command-line tools detected; continuing." -ForegroundColor Green
+        } else {
+            Read-Host "Press Enter once SDK setup is complete"
         }
-        Read-Host "Press Enter once SDK setup is complete"
     }
 
     if (-not (Test-Path $sdkPath)) { throw "Android SDK not found at $sdkPath. Finish the wizard, then re-run." }

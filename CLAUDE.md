@@ -248,10 +248,14 @@ drift, or a broken unattended path each turns a line red.
 Trigger: the user says **"start Full Test"**. This is the *live, destructive*
 run — it installs everything, and ends in the **irreversible uninstall**. It is
 driven by the scripts' own **`-RunAll` unattended mode** (see `Start-FullTest`
-in Lite), so it is fire-and-forget except for **one** unavoidable pause: the
-**Android Studio setup wizard**, a GUI with no headless entry point (skipped
-automatically if the SDK command-line tools are already installed). Everything
-else — the menu, `Read-Host` prompts, the "press any key" pauses, the OpenClaw
+in Lite), so it is hands-off except for **one** human step: the **Android Studio
+setup wizard** (a GUI with no headless entry point). That step is *not* skipped
+or failed — when the SDK command-line tools are missing, `StepAndroid` launches
+Studio and then **polls up to 45 min for the SDK to appear** while the human
+completes the wizard, then continues to create + boot the AVD. So the AVD gets
+created and the device-dependent steps (`agent`, `xapk`) run — **nothing skips**
+except `hyperv` when Hyper-V is already enabled (a correct skip). Everything else
+— the menu, `Read-Host` prompts, the "press any key" pauses, the OpenClaw
 onboarding TUI, the `.xapk` picker, and the uninstall confirmations — is
 answered or bypassed automatically.
 
@@ -268,11 +272,13 @@ they can rebuild, then have them launch (as Administrator, or with UAC disabled)
 
 `-RunAll` walks every menu item in order: enabled steps run via the
 unattended-safe `Invoke-Step`; steps whose preconditions are not yet met are
-recorded as **expected skips** (with the menu's reason), not failures. So on a
-fresh machine some steps skip on the first pass — after Hyper-V + the SDK
-wizard, **re-run `-RunAll`** to continue past those gates. It writes
-**`full_test_report.md`** (gitignored) with a PASS/FAIL/SKIP row and duration per
-step; per-step console transcripts land in `logs/`.
+recorded as **expected skips** (with the menu's reason), not failures. The only
+gate that forces a **re-run** is Hyper-V: if it was just enabled, reboot and run
+`-RunAll` again (the SDK gate no longer needs a re-run — the android step waits
+for the wizard in-place). It writes **`full_test_report.md`** (gitignored) with a
+PASS/FAIL/SKIP row and duration per step; per-step console transcripts land in
+`logs/`, and the report is written from a `finally` so it survives a mid-run
+throw.
 
 What the agent does on this trigger: confirm the VM precondition; note the
 current state (`Get-Date`, `$PSVersionTable`, `whoami`, C: free, Hyper-V state,
@@ -283,17 +289,33 @@ suite** and **Status check** (the source of per-step expected values — do not
 restate them here); flag any FAIL, then summarize Bugs / Improvements /
 Environment and ask before opening issues.
 
-Unattended behavior worth knowing: uninstall **keeps** `~/.ollama` (no 6.6 GB
-re-pull), prereqs, and Hyper-V, but always removes `~/.openclaw` and
-`~/.android`. `-RunAll` requires the token to already be in `./env` (the token
-step keeps the saved value rather than prompting). The onboarding TUI is
-launched detached and killed once `openclaw.json` appears. If the model narrates
-instead of calling tools in the `agent` step, that is a model-tier issue, not a
-script bug.
+Unattended behavior worth knowing: uninstall **keeps** `~/.ollama` model files
+(no 6.6 GB re-pull), prereqs, and Hyper-V, but always removes `~/.openclaw` and
+`~/.android` — and it *does* `winget uninstall Ollama.Ollama`, so the ollama
+**binary** is gone even though the models stay (a re-run's `prereqs` reinstalls
+it). `-RunAll` requires the token to already be in `./env` (the token step keeps
+the saved value rather than prompting). The onboarding TUI is launched detached
+and killed once `openclaw.json` appears. If the model narrates instead of calling
+tools in the `agent` step, that is a model-tier issue, not a script bug.
 
-The agent **cannot** run this from a Claude Code session (sandboxed, and it is
-destructive). Structural coverage of every option lives in the `soft-test`
-command above; `-RunAll` is what exercises them for real, on the user's box.
+Running it: on a real machine, **back up `~/.openclaw` first** (it holds the
+gateway token + paired devices; the teardown deletes it — `~/.android` is
+recreatable). The agent *can* drive `-RunAll` from a session via a **background**
+`PowerShell` task with **`dangerouslyDisableSandbox: true`** (the sandbox blocks
+the installer subprocesses — you'll see `Connectivity probe: failed` otherwise);
+the Studio wizard pops on the user's screen and the 45-min SDK poll waits for it.
+Only do this with the user's explicit, informed go-ahead — it is destructive.
+Structural coverage of every option lives in the `soft-test` command above.
+
+Findings from the first live `-RunAll` (all fixed; keep them from regressing):
+- **Tilde path:** `openclaw config file` returns a `~`-path; `[IO.File]` APIs do
+  not expand `~`, so the gateway `.env` write must expand `~`→`$Home` first.
+- **`Stop` + native stderr:** under the global `$ErrorActionPreference='Stop'`,
+  benign stderr from `adb`/`ollama`/`git`/`openclaw` is *fatal* (even with
+  `2>$null`). Native-heavy steps set `$ErrorActionPreference='Continue'` locally
+  and gate on `$LASTEXITCODE`. When adding a step that shells out, do the same.
+- **Report survival:** `Start-FullTest` guards every `Update-EnvState` and writes
+  the report in a `finally` — one post-step throw used to lose the whole report.
 
 ## Deep docs — read on demand
 
