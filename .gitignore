@@ -1,0 +1,34 @@
+# Secrets -------------------------------------------------------------
+# The token file this script reads is named "env" (no leading dot).
+# A bare ".env" rule would NOT match it.
+env
+.env
+*.env
+!env.example
+secrets
+secrets.*
+
+# OpenClaw state. These contain plaintext gateway and device tokens.
+openclaw.json
+openclaw.json.*
+paired.json
+paired.json.*
+*.post-ollama-launch
+*.rejected.*
+*.clobbered.*
+*.bak.*
+*.last-good
+
+# Android / emulator ---------------------------------------------------
+*.apk
+*.xapk
+*.apks
+*.obb
+
+# Windows / editors ----------------------------------------------------
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
