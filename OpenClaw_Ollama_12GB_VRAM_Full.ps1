@@ -250,6 +250,14 @@ $StepVerifyHyperV = {
 ##  "emulator" only launches AVDs; "avdmanager" creates them.
 ## ============================================================
 $StepAndroid = {
+    ## adb prints to stderr constantly ("daemon not running; starting now",
+    ## "no devices/emulators found" during the boot poll), which is fatal under
+    ## the global Stop preference and once failed this step mid-boot even though
+    ## the AVD came up fine. sdkmanager/avdmanager failures are still caught by
+    ## their explicit $LASTEXITCODE checks, and the boot poll has its own
+    ## deadline + throw, so Continue is safe here.
+    $ErrorActionPreference = 'Continue'
+
     $studioExe = "C:\Program Files\Android\Android Studio\bin\studio64.exe"
     $sdkPath   = "$env:LOCALAPPDATA\Android\Sdk"
     $sdkManagerBat = "$sdkPath\cmdline-tools\latest\bin\sdkmanager.bat"
@@ -434,6 +442,11 @@ $StepAndroid = {
 ##  or the app installs and then crashes looking for its assets.
 ## ============================================================
 $StepXapk = {
+    ## adb (install / install-multiple / push / devices) writes to stderr, fatal
+    ## under the global Stop preference; real failures are caught by the explicit
+    ## $LASTEXITCODE checks below, so Continue.
+    $ErrorActionPreference = 'Continue'
+
     ## Unattended takes the package from -AutoXapkPath (relative paths resolve
     ## against the script dir), skipping the GUI picker entirely.
     $XapkPath = $null

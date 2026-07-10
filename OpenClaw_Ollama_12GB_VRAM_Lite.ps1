@@ -295,6 +295,11 @@ function Write-Rule {
 $script:Env = @{}
 
 function Update-EnvState {
+    ## Pure probing -- it must NEVER throw. Under the global Stop preference,
+    ## native tools writing to stderr (adb "daemon not running", ollama, npm)
+    ## raise a terminating NativeCommandError even with 2>$null. That once
+    ## killed the -RunAll report writer mid-loop. Continue keeps probes benign.
+    $ErrorActionPreference = 'Continue'
     $s = @{}
 
     $s.Npm      = [bool](Get-Command npm      -ErrorAction SilentlyContinue)
@@ -604,6 +609,12 @@ $StepPrereqs = {
 ##  Step 5 -- scrcpy-mcp + Ollama + model
 ## ============================================================
 $StepOllama = {
+    ## npm and ollama stream progress/warnings to stderr, which is fatal under
+    ## the global Stop preference even when the command succeeds ("pulling
+    ## manifest ..." tripped this on the first -RunAll). Drive them by
+    ## $LASTEXITCODE, not by stderr. Explicit 'throw' still fails the step.
+    $ErrorActionPreference = 'Continue'
+
     if ($Features.Mcp) {
         npm install -g scrcpy-mcp
         if ($LASTEXITCODE -ne 0) { throw "npm install -g scrcpy-mcp failed." }
@@ -621,6 +632,7 @@ $StepOllama = {
     if (-not $ok) { throw "Ollama daemon never came up on 127.0.0.1:11434" }
 
     ollama pull qwen3.5
+    if ($LASTEXITCODE -ne 0) { throw "ollama pull qwen3.5 failed." }
     ollama list
 }
 
@@ -644,6 +656,13 @@ $StepToken = {
 ##  Step 7 -- OpenClaw
 ## ============================================================
 $StepOpenClaw = {
+    ## This step is native-command heavy (openclaw, ollama), and those write
+    ## progress/diagnostics to stderr that is fatal under the global Stop
+    ## preference even on success. Real failures are still caught explicitly:
+    ## Patch dry-runs and checks $LASTEXITCODE, and 'config validate' is gated
+    ## by $LASTEXITCODE before doctor runs.
+    $ErrorActionPreference = 'Continue'
+
     $tokenValue = Get-SavedToken
     if (-not $tokenValue) { throw "No Telegram token saved. Run step [6] first." }
 
@@ -696,7 +715,13 @@ $StepOpenClaw = {
         ollama launch openclaw --model qwen3.5 --yes
     }
 
+    ## 'openclaw config file' can return a ~-prefixed path. PowerShell cmdlets
+    ## (Test-Path, Copy-Item, Get-Content) expand ~, but the .NET [IO.File] APIs
+    ## below do NOT -- they resolve ~ against the current directory, so the .env
+    ## write lands at <cwd>\~\.openclaw\.env and fails. Expand ~ to $Home once,
+    ## here, so every later use (Split-Path, WriteAllLines) is an absolute path.
     $cfg = (openclaw config file).Trim()
+    if ($cfg -like '~*') { $cfg = Join-Path $Home ($cfg -replace '^~[\\/]?', '') }
     if (-not (Test-Path $cfg)) { throw "No config at $cfg. Did onboarding fail?" }
     if (-not (Test-Path "$cfg.post-ollama-launch")) { Copy-Item $cfg "$cfg.post-ollama-launch" }
     openclaw gateway stop
@@ -916,6 +941,12 @@ function Test-Case {
 }
 
 $StepSuite = {
+    ## Diagnostics only. Each Test-Case wraps its check in try/catch, but under
+    ## the global Stop preference a native tool's stderr turns into a throw that
+    ## the catch scores as a FALSE fail. Continue lets each check evaluate its
+    ## real boolean.
+    $ErrorActionPreference = 'Continue'
+
     $script:TPass = 0
     $script:TFail = 0
 
@@ -1047,6 +1078,11 @@ $StepSuite = {
 $StepTest = {
     if (-not $Features.Mcp) { throw "Agent device tests need the MCP bridge (Full)." }
 
+    ## 'openclaw agent' streams to stderr (and node prints gateway diagnostics
+    ## there); fatal under Stop even when a prompt completes. Continue so all
+    ## three prompts run and you can judge tool-calls vs narration from output.
+    $ErrorActionPreference = 'Continue'
+
     Write-Host "These only mean anything if the test suite showed real scrcpy" -ForegroundColor Yellow
     Write-Host "tools and supportsTools: true." -ForegroundColor Yellow
     Write-Host ""
@@ -1060,6 +1096,11 @@ $StepTest = {
 ##  Step 10 -- status
 ## ============================================================
 $StepStatus = {
+    ## Read-only reporting. It shells out to openclaw/ollama/adb/emulator, whose
+    ## stderr ("Connectivity probe: failed" when the gateway is down, etc.) is
+    ## fatal under Stop and would abort a status check that should just show red
+    ## rows. Continue lets every probe fail into its own cell instead.
+    $ErrorActionPreference = 'Continue'
     Update-EnvState
     $e = $script:Env
 
@@ -1881,7 +1922,13 @@ TELEGRAM_BOT_TOKEN=1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
     ## .gitignore does nothing for a file git is already tracking. If the
     ## token was committed once, it is in history forever and rotating the
     ## token is the only real fix.
+    ##
+    ## Continue here: 'git ls-files --error-unmatch env' prints "pathspec 'env'
+    ## did not match" to stderr in the (good) case where env is untracked, which
+    ## is fatal under Stop and would fail the docs step AFTER it already wrote
+    ## every file. We drive this check by $LASTEXITCODE, not by stderr.
     if (Get-Command git -ErrorAction SilentlyContinue) {
+        $ErrorActionPreference = 'Continue'
         Push-Location (Split-Path $self)
         try {
             git rev-parse --is-inside-work-tree *>$null
@@ -2011,6 +2058,11 @@ $StepDashboard = {
     if (-not (Get-Command openclaw -ErrorAction SilentlyContinue)) {
         throw "openclaw not installed. Run step [7] first."
     }
+
+    ## 'openclaw gateway status'/'dashboard' print "Connectivity probe: failed"
+    ## to stderr when the gateway is down -- fatal under Stop. We branch on
+    ## $LASTEXITCODE instead, so Continue here.
+    $ErrorActionPreference = 'Continue'
 
     openclaw gateway status
     if ($LASTEXITCODE -ne 0) {
@@ -2404,60 +2456,68 @@ function Start-FullTest {
     Write-Host "  ##############################################################" -ForegroundColor Red
     Write-Host ""
 
-    Update-EnvState
+    ## Update-EnvState spawns native probes (adb, ollama, npm) whose benign
+    ## stderr is fatal under Stop; a throw here must not abort the run. Guard
+    ## every call, and write the report from a finally so a mid-run throw still
+    ## leaves a record (this is the bug that lost the first run's report).
+    try { Update-EnvState } catch { }
     $started = Get-Date
     $rows = @()
 
-    for ($i = 0; $i -lt $script:Items.Count; $i++) {
-        $item = $script:Items[$i]
-        $n = if ($i -lt 9) { "$($i + 1)" } elseif ($i -eq 9) { "0" } else { "-" }
+    try {
+        for ($i = 0; $i -lt $script:Items.Count; $i++) {
+            $item = $script:Items[$i]
+            $n = if ($i -lt 9) { "$($i + 1)" } elseif ($i -eq 9) { "0" } else { "-" }
 
-        if (-not (& $item.Enabled)) {
-            $why = if ($item.Why -is [scriptblock]) { & $item.Why } else { $item.Why }
-            Write-Host ("  [ skip ] [{0}] {1}" -f $n, $item.Label) -ForegroundColor DarkGray
-            $rows += [PSCustomObject]@{ N=$n; Step=$item.Label; Result="SKIP"; Secs=0; Note=$why; Log="" }
-            continue
+            $enabled = $false
+            try { $enabled = [bool](& $item.Enabled) } catch { }
+            if (-not $enabled) {
+                $why = try { if ($item.Why -is [scriptblock]) { & $item.Why } else { $item.Why } } catch { "" }
+                Write-Host ("  [ skip ] [{0}] {1}" -f $n, $item.Label) -ForegroundColor DarkGray
+                $rows += [PSCustomObject]@{ N=$n; Step=$item.Label; Result="SKIP"; Secs=0; Note=$why; Log="" }
+                continue
+            }
+
+            $r = Invoke-Step -Name $item.Label -Body $item.Action
+            try { Update-EnvState } catch { }
+            $rows += [PSCustomObject]@{
+                N=$n; Step=$item.Label
+                Result = if ($r.Failed) { "FAIL" } else { "PASS" }
+                Secs   = [int]$r.Elapsed.TotalSeconds
+                Note   = ""
+                Log    = if ($r.Log) { Split-Path $r.Log -Leaf } else { "" }
+            }
         }
+    } finally {
+        ## ---- write the report (UTF-8, no BOM, like every other file) ----
+        $passN = @($rows | Where-Object Result -eq "PASS").Count
+        $failN = @($rows | Where-Object Result -eq "FAIL").Count
+        $skipN = @($rows | Where-Object Result -eq "SKIP").Count
 
-        $r = Invoke-Step -Name $item.Label -Body $item.Action
-        Update-EnvState
-        $rows += [PSCustomObject]@{
-            N=$n; Step=$item.Label
-            Result = if ($r.Failed) { "FAIL" } else { "PASS" }
-            Secs   = [int]$r.Elapsed.TotalSeconds
-            Note   = ""
-            Log    = if ($r.Log) { Split-Path $r.Log -Leaf } else { "" }
+        $sb = New-Object Text.StringBuilder
+        [void]$sb.AppendLine("# Full Test report -- $script:Edition edition")
+        [void]$sb.AppendLine("")
+        [void]$sb.AppendLine("- Started: $started")
+        [void]$sb.AppendLine("- Ended:   $(Get-Date)")
+        [void]$sb.AppendLine("- Host: PowerShell $($PSVersionTable.PSVersion), $([Environment]::MachineName), admin=$([bool](Test-Admin))")
+        [void]$sb.AppendLine("- Result: $passN passed, $failN failed, $skipN skipped (expected); $($rows.Count)/$($script:Items.Count) steps recorded")
+        [void]$sb.AppendLine("")
+        [void]$sb.AppendLine("| # | Step | Result | Secs | Note / skip reason | Log |")
+        [void]$sb.AppendLine("| --- | --- | --- | --- | --- | --- |")
+        foreach ($row in $rows) {
+            $note = ($row.Note -replace '\|', '\|')
+            [void]$sb.AppendLine("| $($row.N) | $($row.Step) | $($row.Result) | $($row.Secs) | $note | $($row.Log) |")
         }
+        [void]$sb.AppendLine("")
+        [void]$sb.AppendLine("Per-step console transcripts are in ``logs/`` (gitignored).")
+
+        $reportPath = Join-Path $BaseDir "full_test_report.md"
+        [IO.File]::WriteAllText($reportPath, $sb.ToString(), (New-Object Text.UTF8Encoding($false)))
+
+        Write-Host ""
+        Write-Host "  $passN passed, $failN failed, $skipN skipped" -ForegroundColor (@('Green','Red')[[int]($failN -gt 0)])
+        Write-Host "  report: $reportPath" -ForegroundColor Cyan
     }
-
-    ## ---- write the report (UTF-8, no BOM, like every other file) ----
-    $passN = @($rows | Where-Object Result -eq "PASS").Count
-    $failN = @($rows | Where-Object Result -eq "FAIL").Count
-    $skipN = @($rows | Where-Object Result -eq "SKIP").Count
-
-    $sb = New-Object Text.StringBuilder
-    [void]$sb.AppendLine("# Full Test report -- $script:Edition edition")
-    [void]$sb.AppendLine("")
-    [void]$sb.AppendLine("- Started: $started")
-    [void]$sb.AppendLine("- Ended:   $(Get-Date)")
-    [void]$sb.AppendLine("- Host: PowerShell $($PSVersionTable.PSVersion), $([Environment]::MachineName), admin=$([bool](Test-Admin))")
-    [void]$sb.AppendLine("- Result: $passN passed, $failN failed, $skipN skipped (expected)")
-    [void]$sb.AppendLine("")
-    [void]$sb.AppendLine("| # | Step | Result | Secs | Note / skip reason | Log |")
-    [void]$sb.AppendLine("| --- | --- | --- | --- | --- | --- |")
-    foreach ($row in $rows) {
-        $note = ($row.Note -replace '\|', '\|')
-        [void]$sb.AppendLine("| $($row.N) | $($row.Step) | $($row.Result) | $($row.Secs) | $note | $($row.Log) |")
-    }
-    [void]$sb.AppendLine("")
-    [void]$sb.AppendLine("Per-step console transcripts are in ``logs/`` (gitignored).")
-
-    $reportPath = Join-Path $BaseDir "full_test_report.md"
-    [IO.File]::WriteAllText($reportPath, $sb.ToString(), (New-Object Text.UTF8Encoding($false)))
-
-    Write-Host ""
-    Write-Host "  $passN passed, $failN failed, $skipN skipped" -ForegroundColor (@('Green','Red')[[int]($failN -gt 0)])
-    Write-Host "  report: $reportPath" -ForegroundColor Cyan
 }
 
 ## ------------------------------------------------------------
