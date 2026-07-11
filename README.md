@@ -302,14 +302,25 @@ Losing `compat.supportsTools` is not cosmetic: the model is then never offered
 tools, and falls back to narrating shell commands -- looking exactly like a
 model-capability problem.
 
-`models.providers.<id>.models` is a *protected path*, and `config set
-... --merge` is **not** the answer either: on OpenClaw `2026.6.11` it left a
-**duplicate** `qwen3.5:latest` entry in the array and then silently failed to change
-`num_ctx`/`contextTokens`, so the model kept running at the native 262144 with
-its KV cache spilled to CPU (`ollama ps` never reached `100% GPU`). The script
-instead **reads the current entry, de-duplicates by id, sets the three context
-fields, and full-replaces** the array -- safe because it carries the whole entry
-(including `compat.supportsTools`) forward. Verify the fix with `ollama ps`.
+Clamping the `models` array has **two locks**:
+
+1. It is a **protected path**, so a full write needs `--replace` (`config set
+   --help`: *"Allow full replacement of protected map/list paths"*).
+2. A **quoted JSON argument** is mangled by Windows PowerShell 5.1: `openclaw.cmd`
+   re-expands `%*` into node, the embedded quotes are stripped, the `id` is
+   lost, and OpenClaw's merge-by-id (which is correct -- it *does* merge by id)
+   then **appends** the id-less entry as a **duplicate**. Two same-id rows, the
+   resolver reads the first (`doctor`'s 262144), and the model runs with its KV
+   cache spilled to CPU -- `ollama ps` never reaches `100% GPU`. (PowerShell 7
+   fixes the quoting; 5.1 is the default this ships for.)
+
+The script clears both: read the entry, de-duplicate by id, set the three context
+fields, and write via `openclaw config set --batch-file <file> --replace` -- a
+**file** carries the JSON verbatim, past all shell quoting (the docs call the batch
+payload the source of truth), and `--replace` authorizes the protected path. It
+carries the whole entry forward, preserving `compat.supportsTools`. (`config
+patch --stdin` + `--replace-path` is an equivalent stdin route.) Verify with
+`ollama ps`: `100% GPU` at your `num_ctx`.
 
 ### Context window
 

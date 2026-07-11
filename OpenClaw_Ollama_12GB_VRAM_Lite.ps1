@@ -508,21 +508,31 @@ function Patch {
 ## Sets contextWindow, contextTokens, and params.num_ctx on the ollama model
 ## entry, ALL equal to $Cap.
 ##
-## Why not 'config set models.providers.ollama.models [...] --merge': on the
-## build (OpenClaw 2026.6.11) that DID NOT merge by id -- it left a DUPLICATE
-## "$Model" entry in the array, after which merge-by-id could no longer target a
-## single row, so num_ctx/contextTokens silently never changed and the model ran
-## at the native 262144 spilled to CPU (ollama ps showed CPU/GPU split, not
-## 100% GPU). So: read the current entry (preserving compat.supportsTools, cost,
-## reasoning that onboarding set), de-duplicate to a single entry by id, set the
-## three fields, and FULL-REPLACE the array (no --merge). Full replace is safe
-## here precisely because we carry the whole entry forward.
+## The write goes through 'openclaw config set --batch-file <file>' -- NEVER a
+## quoted JSON argument on the command line. PowerShell 5.1's native-argument
+## quoting mangles embedded double quotes (openclaw.cmd re-expands %* into node),
+## which corrupts the entry's "id". OpenClaw's merge-by-id then treats the
+## id-less entry as new and APPENDS it (src/config/merge-patch.ts: "merge by id,
+## or append when the id is new"), leaving a DUPLICATE. Two same-id rows and the
+## resolver reads the first (doctor's 262144), so the model runs on CPU. A batch
+## FILE carries the JSON verbatim, sidestepping all shell quoting -- the docs
+## call the batch payload the source of truth.
+##
+## We also de-duplicate (a bad run may already have appended a twin) and carry
+## the whole entry forward (preserving compat.supportsTools; losing it stops tool
+## calls). The batch op sets models.providers.ollama.models to the de-duped array
+## -- a replace, no --merge, so duplicates collapse.
 function Set-ModelContextCap {
     param([int]$Cap)
     $models = @(openclaw config get models.providers.ollama.models --json 2>$null | Out-String | ConvertFrom-Json)
-    $m = @($models | Where-Object { $_.id -eq $Model })[0]   # first match -> de-dupe
-    if (-not $m) { throw "No '$Model' entry in models.providers.ollama.models to clamp." }
+    if (-not $models -or $models.Count -eq 0) { throw "No models.providers.ollama.models to clamp." }
 
+    ## de-dupe by id, keep first occurrence of each
+    $seen = @{}; $dedup = @()
+    foreach ($e in $models) { if ($e.id -and -not $seen.ContainsKey($e.id)) { $seen[$e.id] = $true; $dedup += $e } }
+
+    $m = @($dedup | Where-Object { $_.id -eq $Model })[0]
+    if (-not $m) { throw "No '$Model' entry in models.providers.ollama.models to clamp." }
     $m.contextWindow = $Cap
     if ($m.PSObject.Properties.Name -contains 'contextTokens') { $m.contextTokens = $Cap }
     else { $m | Add-Member -NotePropertyName contextTokens -NotePropertyValue $Cap -Force }
@@ -530,10 +540,19 @@ function Set-ModelContextCap {
     if ($m.params.PSObject.Properties.Name -contains 'num_ctx') { $m.params.num_ctx = $Cap }
     else { $m.params | Add-Member -NotePropertyName num_ctx -NotePropertyValue $Cap -Force }
 
-    ## -Depth high: the entry nests compat/cost/params/input. -Compress -> one line.
-    $json = ConvertTo-Json @($m) -Depth 20 -Compress
-    openclaw config set models.providers.ollama.models $json --strict-json
-    if ($LASTEXITCODE -ne 0) { throw "Failed to set clamped '$Model' entry." }
+    ## Batch file: [{ path, value }]. UTF-8 no BOM, -Depth deep (nested
+    ## compat/cost/params/input). Written to disk so no quotes hit the shell.
+    ## --replace: models.providers.ollama.models is a PROTECTED path; --replace
+    ## is what authorizes a full replacement of it (config set --help). Batch
+    ## mode happened to accept the write without it, but we pass it explicitly.
+    ## (config patch --stdin + --replace-path is an equivalent stdin-based route.)
+    $batch = @( [ordered]@{ path = 'models.providers.ollama.models'; value = @($dedup) } )
+    $bf = Join-Path $env:TEMP "oc-clamp-$PID.json"
+    [IO.File]::WriteAllText($bf, (ConvertTo-Json $batch -Depth 40), (New-Object Text.UTF8Encoding($false)))
+    try {
+        openclaw config set --batch-file $bf --strict-json --replace
+        if ($LASTEXITCODE -ne 0) { throw "config set --batch-file failed clamping '$Model'." }
+    } finally { Remove-Item $bf -Force -ErrorAction SilentlyContinue }
 }
 
 function Invoke-Step {
@@ -1680,14 +1699,25 @@ $StepReadme = {
     Add-Line "tools, and falls back to narrating shell commands -- looking exactly like a"
     Add-Line "model-capability problem."
     Add-Line ""
-    Add-Line "``models.providers.<id>.models`` is a *protected path*, and ``config set"
-    Add-Line "... --merge`` is **not** the answer either: on OpenClaw ``2026.6.11`` it left a"
-    Add-Line "**duplicate** ``$Model`` entry in the array and then silently failed to change"
-    Add-Line "``num_ctx``/``contextTokens``, so the model kept running at the native 262144 with"
-    Add-Line "its KV cache spilled to CPU (``ollama ps`` never reached ``100% GPU``). The script"
-    Add-Line "instead **reads the current entry, de-duplicates by id, sets the three context"
-    Add-Line "fields, and full-replaces** the array -- safe because it carries the whole entry"
-    Add-Line "(including ``compat.supportsTools``) forward. Verify the fix with ``ollama ps``."
+    Add-Line "Clamping the ``models`` array has **two locks**:"
+    Add-Line ""
+    Add-Line "1. It is a **protected path**, so a full write needs ``--replace`` (``config set"
+    Add-Line "   --help``: *""Allow full replacement of protected map/list paths""*)."
+    Add-Line "2. A **quoted JSON argument** is mangled by Windows PowerShell 5.1: ``openclaw.cmd``"
+    Add-Line "   re-expands ``%*`` into node, the embedded quotes are stripped, the ``id`` is"
+    Add-Line "   lost, and OpenClaw's merge-by-id (which is correct -- it *does* merge by id)"
+    Add-Line "   then **appends** the id-less entry as a **duplicate**. Two same-id rows, the"
+    Add-Line "   resolver reads the first (``doctor``'s 262144), and the model runs with its KV"
+    Add-Line "   cache spilled to CPU -- ``ollama ps`` never reaches ``100% GPU``. (PowerShell 7"
+    Add-Line "   fixes the quoting; 5.1 is the default this ships for.)"
+    Add-Line ""
+    Add-Line "The script clears both: read the entry, de-duplicate by id, set the three context"
+    Add-Line "fields, and write via ``openclaw config set --batch-file <file> --replace`` -- a"
+    Add-Line "**file** carries the JSON verbatim, past all shell quoting (the docs call the batch"
+    Add-Line "payload the source of truth), and ``--replace`` authorizes the protected path. It"
+    Add-Line "carries the whole entry forward, preserving ``compat.supportsTools``. (``config"
+    Add-Line "patch --stdin`` + ``--replace-path`` is an equivalent stdin route.) Verify with"
+    Add-Line "``ollama ps``: ``100% GPU`` at your ``num_ctx``."
     Add-Line ""
 
     Add-Line "### Context window"
