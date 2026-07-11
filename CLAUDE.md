@@ -253,12 +253,16 @@ Check "StepLaunchAvd pins iGPU + -gpu host"  (($StepLaunchAvd.ToString() -match 
 $scmDef = (Get-Command Set-ModelContextCap).Definition
 Check "Set-ModelContextCap patches via stdin (Patch), no inline config set" (($scmDef -match 'Patch .context clamp') -and ($scmDef -notmatch 'config set models'))
 Check "StepOpenClaw clamps via Set-ModelContextCap"  ($StepOpenClaw.ToString() -match 'Set-ModelContextCap')
+# Install sub-menu: lists all three add-ons and is unattended-safe (Read-Prompt).
+$skDef = $StepSkills.ToString()
+Check "StepSkills sub-menu lists 3 add-ons + unattended-safe" (($skDef -match 'scrcpy-mcp') -and ($skDef -match '@thesethrose/context7') -and ($skDef -match '@freeter226/base64-toolkit') -and ($skDef -match 'Read-Prompt'))
+Check "Install-ClawSkill defined" ([bool](Get-Command Install-ClawSkill -EA SilentlyContinue))
 
 Write-Host "`n== soft-test: $pass passed, $fail failed ==" -ForegroundColor (@('Green','Red')[[int]($fail -gt 0)])
 if ($fail -gt 0) { exit 1 }
 ```
 
-Expected on a clean tree: **65 passed, 0 failed**. A new menu item, a renamed
+Expected on a clean tree: **67 passed, 0 failed**. A new menu item, a renamed
 key, a broken `Enabled`/`Why`, a non-ASCII byte, an accidental BOM, generator
 drift, or a broken unattended path each turns a line red.
 

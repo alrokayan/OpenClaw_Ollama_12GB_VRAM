@@ -2558,35 +2558,103 @@ $StepAutoStart = {
 }
 
 ## ============================================================
-##  Install the Context7 docs skill
+##  Install optional add-ons  (skills / MCPs / plugins sub-menu)
 ##
-##  @thesethrose/context7 is a ClawHub skill that lets the agent pull current,
-##  version-accurate library/framework/API docs on demand (the same Context7
-##  service this repo's own tooling uses). One command: 'openclaw skills install
-##  <@owner/slug>'. It fetches from ClawHub, so it prints progress to stderr and
-##  shells out -- benign under Continue; we gate success on $LASTEXITCODE.
+##  A small in-step catalog of extras the agent can use. Each entry is fully
+##  self-describing (Name, Kind, Desc, Install scriptblock), so growing the list
+##  is a one-liner. The step prints the catalog, asks which to install, and runs
+##  the selected Install blocks. Unattended (-RunAll) selects "all" via the
+##  Read-Prompt default, so nothing blocks.
 ##
-##  Idempotent-ish: a re-run against an already-installed skill exits non-zero;
-##  we report that as "already installed" rather than treating it as a failure.
+##  Current catalog:
+##    scrcpy-mcp       MCP server -- fast Android screen control + screenshots
+##                     (returns PNGs as proper MCP image content blocks).
+##    context7         Skill @thesethrose/context7 -- on-demand, version-accurate
+##                     library/API docs for the agent.
+##    base64-toolkit   Skill @freeter226/base64-toolkit -- encode/decode base64,
+##                     so the model can actually handle inline base64 (e.g. a
+##                     screenshot tool result) instead of choking on the string.
+##
+##  ClawHub skill installs shell out and print to stderr, so each helper runs
+##  under Continue and gates on $LASTEXITCODE (a re-run of an already-installed
+##  skill exits non-zero -- reported, not fatal).
 ## ============================================================
+function Install-ClawSkill {
+    param([string]$Ref)
+    $ErrorActionPreference = 'Continue'
+    Write-Host "  openclaw skills install $Ref" -ForegroundColor DarkGray
+    openclaw skills install $Ref
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($code -ne 0) {
+        Write-Host "  (exited $code -- may already be installed; 'openclaw skills list' to check)" -ForegroundColor DarkGray
+    }
+}
+
 $StepSkills = {
     if (-not (Get-Command openclaw -ErrorAction SilentlyContinue)) {
         throw "openclaw not installed. Run step [7] first."
     }
-    $ref = '@thesethrose/context7'
 
-    $ErrorActionPreference = 'Continue'
-    Write-Host "Installing skill $ref from ClawHub..." -ForegroundColor Cyan
-    openclaw skills install $ref
-    $code = $LASTEXITCODE
-    $ErrorActionPreference = 'Stop'
+    $catalog = @(
+        [PSCustomObject]@{
+            Name = "scrcpy-mcp"; Kind = "MCP server"
+            Desc = "Fast Android screen control + screenshots (PNGs as MCP image blocks)."
+            Install = {
+                ## npx fetches on demand, but a global install pre-warms the first
+                ## gateway launch. Native command -> Continue + exit-code gate.
+                $ErrorActionPreference = 'Continue'
+                npm install -g scrcpy-mcp
+                $ErrorActionPreference = 'Stop'
+                ## Register it so the gateway spawns it. cmd.exe wrapper: Node's
+                ## spawn() throws on bare 'npx'/'npx.cmd' (see the openclaw step).
+                Patch "scrcpy mcp" @'
+{ mcp: { servers: { scrcpy: { command: "cmd.exe", args: ["/c","npx","scrcpy-mcp"] } } } }
+'@
+            }
+        }
+        [PSCustomObject]@{
+            Name = "context7"; Kind = "skill (@thesethrose/context7)"
+            Desc = "On-demand, version-accurate library/API docs for the agent."
+            Install = { Install-ClawSkill '@thesethrose/context7' }
+        }
+        [PSCustomObject]@{
+            Name = "base64-toolkit"; Kind = "skill (@freeter226/base64-toolkit)"
+            Desc = "Encode/decode base64 -- lets the model handle inline base64 (e.g. screenshot data) instead of choking on the raw string."
+            Install = { Install-ClawSkill '@freeter226/base64-toolkit' }
+        }
+    )
 
-    if ($code -eq 0) {
-        Write-Host "Installed. Verify with:  openclaw skills list" -ForegroundColor Green
-    } else {
-        Write-Host "skills install exited $code -- it may already be installed." -ForegroundColor Yellow
-        Write-Host "Re-run with --force to overwrite, or check:  openclaw skills list" -ForegroundColor DarkGray
+    Write-Host "Optional add-ons (skills / MCPs / plugins):" -ForegroundColor Cyan
+    Write-Host ""
+    for ($i = 0; $i -lt $catalog.Count; $i++) {
+        $c = $catalog[$i]
+        Write-Host ("  [{0}] {1,-15}{2}" -f ($i + 1), $c.Name, $c.Kind) -ForegroundColor Green
+        Write-Host ("      {0}" -f $c.Desc) -ForegroundColor DarkGray
     }
+    Write-Host ""
+
+    ## Selection: numbers ("1 3"), "all", or "none". Default (and unattended) = all.
+    $ans = Read-Prompt "Install which? (e.g. '1 3', 'all', 'none')" "all"
+    $pick =
+        if     ($ans -match '^\s*none\s*$')                                    { @() }
+        elseif ($ans -match '^\s*all\s*$' -or [string]::IsNullOrWhiteSpace($ans)) { 1..$catalog.Count }
+        else   { @($ans -split '[\s,]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }) }
+
+    if ($pick.Count -eq 0) { Write-Host "Nothing selected." -ForegroundColor Yellow; return }
+
+    foreach ($n in ($pick | Sort-Object -Unique)) {
+        if ($n -lt 1 -or $n -gt $catalog.Count) { continue }
+        $c = $catalog[$n - 1]
+        Write-Host ""
+        Write-Host ("Installing [{0}] {1} ({2})..." -f $n, $c.Name, $c.Kind) -ForegroundColor Cyan
+        try   { & $c.Install; Write-Host ("  {0}: done." -f $c.Name) -ForegroundColor Green }
+        catch { Write-Host ("  {0}: {1}" -f $c.Name, $_.Exception.Message) -ForegroundColor Yellow }
+    }
+
+    Write-Host ""
+    Write-Host "Verify skills:  openclaw skills list" -ForegroundColor DarkGray
+    Write-Host "Verify MCPs:    mcp.servers in openclaw.json (openclaw config get mcp)" -ForegroundColor DarkGray
 }
 
 ## ============================================================
@@ -2668,7 +2736,7 @@ $script:Items = @(
        Enabled={ $script:Env.OpenClaw -or $script:Env.Ollama }
        Why="Install OpenClaw (step 7) or Ollama (step 5) first -- there is nothing to auto-start yet." }
 
-    @{ Key="skills";   Group="USE"; Color="Green"; Label="Install the Context7 docs skill (@thesethrose/context7)"
+    @{ Key="skills";   Group="USE"; Color="Green"; Label="Install skills / MCPs / plugins (sub-menu)"
        Action=$StepSkills
        Enabled={ $script:Env.OpenClaw }
        Why="OpenClaw is not installed (step 7)." }
