@@ -620,6 +620,82 @@ function Invoke-Step {
 ## ============================================================
 ##  Step 1 -- prerequisites
 ## ============================================================
+## ============================================================
+##  Ensure a 'python3' binary exists on PATH.
+##
+##  Windows Python ships 'python.exe' but NOT 'python3.exe', so the bare name
+##  'python3' never resolves. Skills that declare a python3 requirement (e.g.
+##  @freeter226/base64-toolkit -- the one that lets the model handle inline
+##  base64 screenshot data) therefore stay INELIGIBLE. openclaw checks bins
+##  live (PATH + PATHEXT) but caches skill eligibility at gateway start, so the
+##  binary must exist BEFORE the gateway ever evaluates -- hence this runs in
+##  prereqs, the first step.
+##
+##  The fix is a REAL python3.exe (a copy of python.exe in the same, on-PATH
+##  dir). A .cmd/.bat shim would satisfy a shell 'where' but NOT Node's direct
+##  spawn (PATHEXT is not applied to spawned children -- the same trap that
+##  forces the cmd.exe wrapper for npx). We reuse an existing Python if present
+##  (so a user's 3.14 is not double-installed) and only winget-install 3.12 when
+##  none is found.
+## ============================================================
+function Ensure-Python3 {
+    if (Get-Command python3 -ErrorAction SilentlyContinue) {
+        Write-Host "python3 already resolves on PATH." -ForegroundColor DarkGray
+        return $true
+    }
+
+    ## An existing real python.exe on PATH? (skip the WindowsApps Store stub)
+    $py = (Get-Command python -ErrorAction SilentlyContinue |
+           Where-Object { $_.Source -and ($_.Source -notmatch 'WindowsApps') } |
+           Select-Object -First 1).Source
+
+    ## Not on PATH -- probe the standard per-user / machine install dirs (covers a
+    ## python that is installed but whose PATH entry has not reached this session).
+    if (-not $py) {
+        $py = (Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
+                             "$env:ProgramFiles\Python3*\python.exe",
+                             "${env:ProgramFiles(x86)}\Python3*\python.exe" -ErrorAction SilentlyContinue |
+               Sort-Object FullName -Descending | Select-Object -First 1).FullName
+    }
+
+    ## Still nothing -- install a stable Python (winget takes ONE id per call).
+    if (-not $py) {
+        Write-Host "python not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
+        $ErrorActionPreference = 'Continue'
+        winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
+        $ErrorActionPreference = 'Stop'
+        $py = (Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
+                             "$env:ProgramFiles\Python3*\python.exe" -ErrorAction SilentlyContinue |
+               Sort-Object FullName -Descending | Select-Object -First 1).FullName
+    }
+    if (-not $py) {
+        Write-Host "Could not locate python.exe. Install Python 3 manually, then re-run prereqs." -ForegroundColor Yellow
+        return $false
+    }
+
+    ## Create python3.exe beside python.exe (real exe -> satisfies 'where' AND spawn).
+    $dir = Split-Path $py -Parent
+    $py3 = Join-Path $dir 'python3.exe'
+    if (Test-Path $py3) {
+        Write-Host "python3.exe already present: $py3" -ForegroundColor DarkGray
+    } else {
+        Copy-Item $py $py3 -Force
+        Write-Host "Created python3.exe -> $py3" -ForegroundColor Green
+    }
+
+    ## Make it resolvable now (this session) and persistently for the user, so
+    ## the logon-triggered gateway inherits it after the next sign-in.
+    if (($env:PATH -split ';') -notcontains $dir) { $env:PATH = "$dir;$env:PATH" }
+    $userPath = [Environment]::GetEnvironmentVariable('PATH','User')
+    if (-not $userPath -or (($userPath -split ';') -notcontains $dir)) {
+        $newUserPath = (@($userPath.TrimEnd(';'), $dir) | Where-Object { $_ }) -join ';'
+        [Environment]::SetEnvironmentVariable('PATH', $newUserPath, 'User')
+        Write-Host "Added $dir to the user PATH (new shells + gateway after next logon)." -ForegroundColor DarkGray
+    }
+
+    return [bool](Get-Command python3 -ErrorAction SilentlyContinue)
+}
+
 $StepPrereqs = {
     ## Store python stubs shadow a real install
     Remove-Item "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe"  -ErrorAction SilentlyContinue
@@ -629,7 +705,8 @@ $StepPrereqs = {
     ## installs only the first.
     ##
     ## No jq: config goes through "openclaw config patch" and paired.json
-    ## through ConvertFrom-Json. No Python: nothing here calls it.
+    ## through ConvertFrom-Json. Python is provisioned separately below
+    ## (Ensure-Python3) -- it needs a 'python3.exe' shim, not just the package.
     $packages = @('Git.Git','7zip.7zip','OpenJS.NodeJS','Ollama.Ollama')
     if ($Features.Android) {
         ## scrcpy ships adb; the JDK and ffmpeg are for Android Studio
@@ -642,6 +719,12 @@ $StepPrereqs = {
 
     reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
     winget install Microsoft.VCRedist.2015+.x64 --accept-source-agreements --accept-package-agreements
+
+    ## Provide a real 'python3' binary. base64-toolkit (and other python skills)
+    ## require it; Windows Python only ships 'python.exe'. Done here, before the
+    ## gateway ever caches skill eligibility, so those skills are eligible from
+    ## the first run. See Ensure-Python3 for the why.
+    Ensure-Python3
 
     ## Allow local scripts for this process only -- do not change the
     ## machine policy on someone's behalf.
@@ -2621,7 +2704,18 @@ $StepSkills = {
         [PSCustomObject]@{
             Name = "base64-toolkit"; Kind = "skill (@freeter226/base64-toolkit)"
             Desc = "Encode/decode base64 -- lets the model handle inline base64 (e.g. screenshot data) instead of choking on the raw string."
-            Install = { Install-ClawSkill '@freeter226/base64-toolkit' }
+            Install = {
+                Install-ClawSkill '@freeter226/base64-toolkit'
+                ## This skill requires a 'python3' binary; Windows ships only
+                ## 'python'. Provision it (same helper prereqs uses) so the skill
+                ## becomes eligible. Restart the gateway to clear its cached
+                ## eligibility if it was already running (see notes below).
+                if (Ensure-Python3) {
+                    Write-Host "  python3 ready -- restart the gateway so it re-checks: openclaw gateway restart" -ForegroundColor DarkGray
+                } else {
+                    Write-Host "  base64-toolkit still needs python3; install Python 3, then re-run." -ForegroundColor Yellow
+                }
+            }
         }
     )
 
