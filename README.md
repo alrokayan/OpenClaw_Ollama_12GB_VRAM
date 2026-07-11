@@ -525,6 +525,7 @@ stable position).
 | - | Approve paired devices | USE | both | No paired.json yet. Pair a device from the Control UI or Telegram. |
 | - | Status check | USE | both | always available |
 | - | Open the dashboard (Control UI) | USE | both | OpenClaw is not installed (step 7). |
+| - | Auto-start on boot: Ollama + gateway (on/off) | USE | both | Install OpenClaw (step 7) or Ollama (step 5) first -- there is nothing to auto-start yet. |
 | - | Generate README.md, LICENSE, .gitignore | USE | both | Only works when run as a file, not piped from the web. |
 | - | Uninstall everything | DANGER | both | Nothing is installed. |
 

@@ -2448,6 +2448,116 @@ $StepApprove = {
 }
 
 ## ============================================================
+##  Auto-start on boot  (toggle)
+##
+##  Two OS-level Scheduled Tasks bring the local stack up when Windows starts:
+##
+##    "OpenClaw Gateway"  Created by OpenClaw's own onboarding (step 7). A
+##                        logon-triggered task that runs ~/.openclaw/gateway.vbs
+##                        hidden. The gateway spawns scrcpy-mcp as a *child* MCP
+##                        server, so enabling the gateway task covers the MCP
+##                        too -- there is nothing separate to toggle for it.
+##
+##    "Ollama Serve"      Created HERE. A logon-triggered task that runs
+##                        'ollama serve' hidden, via a tiny .vbs launcher -- the
+##                        same WScript window-hiding trick OpenClaw uses for its
+##                        gateway, so the daemon does not flash a console at
+##                        logon. Ollama's winget install does not always leave a
+##                        Run-key, so we own this one explicitly.
+##
+##  Both fire at LOGON, not at boot-before-login: the gateway is an interactive
+##  task that needs a user session. A *remote* reboot therefore brings the stack
+##  up only after someone signs in; for a fully-headless boot you would also
+##  need Windows auto-login, which stores a credential at rest and is
+##  deliberately NOT configured here.
+##
+##  This step is a single toggle: it reports current state, then enables or
+##  disables BOTH tasks together. Enabling requires the pieces to exist (run
+##  step 7 for the gateway task, step 5 for ollama) -- it never creates the
+##  gateway task itself; that is OpenClaw's job.
+## ============================================================
+$StepAutoStart = {
+    $gwTask = "OpenClaw Gateway"
+    $olTask = "Ollama Serve"
+
+    ## Scheduled-task cmdlets are CIM-based and do not emit native stderr, so the
+    ## global Stop preference is safe here; -EA SilentlyContinue covers "absent".
+    function Get-AutoStartState($name) {
+        $t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+        if (-not $t)                    { return "absent" }
+        if ($t.State -eq 'Disabled')    { return "disabled" }
+        return "enabled"
+    }
+
+    $gwState = Get-AutoStartState $gwTask
+    $olState = Get-AutoStartState $olTask
+    $color   = { param($s) if ($s -eq 'enabled') { 'Green' } elseif ($s -eq 'absent') { 'DarkGray' } else { 'Yellow' } }
+
+    Write-Host "Current auto-start-on-boot state:" -ForegroundColor Cyan
+    Write-Host ("  OpenClaw gateway (+ scrcpy-mcp) : {0}" -f $gwState) -ForegroundColor (& $color $gwState)
+    Write-Host ("  Ollama serve                   : {0}" -f $olState) -ForegroundColor (& $color $olState)
+    Write-Host ""
+
+    $anyOn   = ($gwState -eq 'enabled') -or ($olState -eq 'enabled')
+    $default = if ($anyOn) { 'disable' } else { 'enable' }
+    $ans     = Read-Prompt "Enable or disable auto-start on boot? (enable/disable)" $default
+    ## Anything not starting with 'd' means enable -- keeps the default sensible.
+    $enable  = ($ans -notmatch '^\s*[dD]')
+
+    if ($enable) {
+        ## ---- OpenClaw gateway (+ scrcpy-mcp child) ----
+        if ($gwState -eq 'absent') {
+            Write-Host "  [gateway] task not found -- run step [7] (OpenClaw onboarding) to create it." -ForegroundColor Yellow
+        } else {
+            Enable-ScheduledTask -TaskName $gwTask | Out-Null
+            Write-Host "  [gateway] auto-start ENABLED (logon trigger; scrcpy-mcp follows as its child)." -ForegroundColor Green
+        }
+
+        ## ---- Ollama serve ----
+        $ollamaExe = (Get-Command ollama -ErrorAction SilentlyContinue).Source
+        if (-not $ollamaExe) {
+            Write-Host "  [ollama] ollama not on PATH -- run step [5] first." -ForegroundColor Yellow
+        } else {
+            ## Hidden launcher (WScript Run style 0 = hidden), mirroring OpenClaw's
+            ## gateway.vbs, so 'ollama serve' never flashes a console at logon.
+            $dir = "$Home\.openclaw"
+            if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            $vbs     = Join-Path $dir 'ollama-serve.vbs'
+            $vbsBody = 'CreateObject("WScript.Shell").Run """' + $ollamaExe + '"" serve", 0, False'
+            [IO.File]::WriteAllText($vbs, $vbsBody, (New-Object Text.UTF8Encoding($false)))
+
+            $action  = New-ScheduledTaskAction   -Execute 'wscript.exe' -Argument ('"{0}"' -f $vbs)
+            $trigger = New-ScheduledTaskTrigger   -AtLogOn -User $env:USERNAME
+            $princ   = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+            $set     = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+            Register-ScheduledTask -TaskName $olTask -Action $action -Trigger $trigger -Principal $princ -Settings $set -Force | Out-Null
+            Write-Host "  [ollama] auto-start ENABLED (logon trigger, hidden via $vbs)." -ForegroundColor Green
+        }
+
+        Write-Host ""
+        Write-Host "Both tasks fire at LOGON. A headless remote reboot brings the stack up" -ForegroundColor DarkGray
+        Write-Host "only after a user signs in; for fully-unattended boot you would also need" -ForegroundColor DarkGray
+        Write-Host "Windows auto-login (a credential-at-rest trade-off, not set by this script)." -ForegroundColor DarkGray
+    }
+    else {
+        ## Gateway: keep the task (OpenClaw owns it) but disable the trigger.
+        if ($gwState -ne 'absent') {
+            Disable-ScheduledTask -TaskName $gwTask | Out-Null
+            Write-Host "  [gateway] auto-start DISABLED (task kept, trigger off)." -ForegroundColor Yellow
+        } else {
+            Write-Host "  [gateway] no task present." -ForegroundColor DarkGray
+        }
+        ## Ollama: this task is ours, so remove it outright.
+        if ($olState -ne 'absent') {
+            Unregister-ScheduledTask -TaskName $olTask -Confirm:$false
+            Write-Host "  [ollama] auto-start task REMOVED." -ForegroundColor Yellow
+        } else {
+            Write-Host "  [ollama] no auto-start task to remove." -ForegroundColor DarkGray
+        }
+    }
+}
+
+## ============================================================
 ##  The menu, in run order.
 ##
 ##  ONE canonical list, shared by both editions, so a number always means
@@ -2520,6 +2630,11 @@ $script:Items = @(
            elseif (-not $script:Env.Cfg)  { "OpenClaw is not configured (step 7)." }
            else { 'controlUi.allowInsecureAuth is absent from openclaw.json, so the Control UI will refuse your token over plain http. Set $EnableDashboard = $true and re-run step 7.' }
        } }
+
+    @{ Key="autostart"; Group="USE"; Color="Green"; Label="Auto-start on boot: Ollama + gateway (on/off)"
+       Action=$StepAutoStart
+       Enabled={ $script:Env.OpenClaw -or $script:Env.Ollama }
+       Why="Install OpenClaw (step 7) or Ollama (step 5) first -- there is nothing to auto-start yet." }
 
     @{ Key="docs";     Group="USE"; Color="Green"; Label="Generate README.md, LICENSE, .gitignore"
        Action=$StepReadme;   Enabled={ [bool]$PSCommandPath }
