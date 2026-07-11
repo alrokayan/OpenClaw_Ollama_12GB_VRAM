@@ -137,6 +137,10 @@ param(
     ## Your numeric Telegram user id. Message @userinfobot to find it.
     [string]$TelegramId = "6420885035",
 
+    ## Name the presence pings greet you by ("Hey <name>, I'm back online").
+    ## Defaults to the Windows username; set to "" for a nameless "Hey, ...".
+    [string]$OwnerName = $env:USERNAME,
+
     [string]$Model = "qwen3.5:latest",
 
     ## contextTokens, contextWindow, and num_ctx are all set to this, or the
@@ -1644,6 +1648,21 @@ $StepReadme = {
     Add-Line "\$f = \"\$env:TEMP\OpenClaw_Full.ps1\"; irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM_Full.ps1 -OutFile \$f; Unblock-File \$f; & \$f"
     Add-Line '```'
     Add-Line ""
+    Add-Line "Shortest (runs straight from memory, no temp file). Start an **Administrator**"
+    Add-Line "PowerShell first -- this form does not self-elevate, uses each script's default"
+    Add-Line "parameters, and the *Generate README* step is unavailable (there is no file on"
+    Add-Line "disk). Full still fetches Lite from the web on its own:"
+    Add-Line ""
+    Add-Line '```powershell'
+    Add-Line "& ([scriptblock]::Create((irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM_Lite.ps1)))   # Lite"
+    Add-Line "& ([scriptblock]::Create((irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM_Full.ps1)))   # Full"
+    Add-Line '```'
+    Add-Line ""
+    Add-Line "``scriptblock::Create`` is **not** ``iex``: the ``param()`` block still binds (to its"
+    Add-Line "defaults), so this runs -- you just cannot pass ``-NumCtx``/``-TelegramId`` through"
+    Add-Line "it. To override parameters, or to get self-elevation and the docs generator, use"
+    Add-Line "the file-based one-liners above (or clone the repo)."
+    Add-Line ""
     Add-Line "**Not** ``irm ... | iex``. Both scripts declare ``#Requires`` and a ``param()`` block,"
     Add-Line "and neither survives being piped through ``Invoke-Expression``: parameters cannot"
     Add-Line "bind, and the version check is skipped. Saving to a file first also means"
@@ -1773,6 +1792,19 @@ $StepReadme = {
     Add-Line "Then work down the menu. Steps 1-7 run in order on a fresh machine, with a"
     Add-Line "**reboot required between step 2 and step 3**. Steps grey out until their"
     Add-Line "preconditions are met, and the reason is printed under the cursor."
+    Add-Line ""
+    Add-Line "Step 2 (Hyper-V / WHPX) needs hardware virtualization **enabled in your"
+    Add-Line "BIOS/UEFI** (Intel VT-x / AMD-V). If step 2 or the emulator reports no"
+    Add-Line "acceleration, turn it on in firmware first -- Microsoft's guide walks through it:"
+    Add-Line "[Enable virtualization on Windows](https://support.microsoft.com/en-us/windows/experience/enable-virtualization-on-windows)."
+    Add-Line ""
+    Add-Line "Step 3 opens **Android Studio**; complete the first-run setup wizard, then use"
+    Add-Line "its **SDK Manager** to install the platform + system image (the step waits for"
+    Add-Line "the SDK to appear, then creates the ``$AvdName`` AVD):"
+    Add-Line ""
+    Add-Line "![Android Studio SDK Manager -- SDK Platforms](images/sdk-manager-1.png)"
+    Add-Line ""
+    Add-Line "![Android Studio SDK Manager -- SDK Tools](images/sdk-manager-2.png)"
     Add-Line ""
     Add-Line "Before trusting anything: run *Status check*, then *Run the test suite*."
     Add-Line ""
@@ -2021,10 +2053,10 @@ $StepReadme = {
     ## --- menu, introspected ---
     Add-Line "## Menu"
     Add-Line ""
-    Add-Line "Navigate with the arrow keys. The bracket shows a per-step **done mark**"
-    Add-Line "(``[x]`` when that step's outcome is already in place, derived from live state)."
-    Add-Line "Items grey out when their preconditions are unmet, with the reason shown under"
-    Add-Line "the cursor. The list is identical in both editions -- Full swaps its Android"
+    Add-Line "Navigate with the arrow keys; each row is a plain ``-`` bullet. Items grey out"
+    Add-Line "when their preconditions are unmet **or** the step is already done, with the"
+    Add-Line "reason shown under the cursor (e.g. *Already enabled.* for Hyper-V once it is on)."
+    Add-Line "The list is identical in both editions -- Full swaps its Android"
     Add-Line "steps in by key, so a step's position never shifts (the ``#`` column below is that"
     Add-Line "stable position)."
     Add-Line ""
@@ -2539,26 +2571,40 @@ $StepApprove = {
 ##  logs); the chat id is injected from -TelegramId at registration.
 ##
 ##    "OpenClaw Presence"        logon task, persistent watcher. TCP-polls the
-##                               gateway port; on a down->up transition sends
-##                               "Hey Doc, I'm back online". Covers OS boot and
-##                               gateway restarts.
-##    "OpenClaw Shutdown Notify" fires on System event 1074 (shutdown/restart
-##                               initiated) and sends "Hey Doc, I'll be right
-##                               back shortly ..". BEST-EFFORT: 1074 fires early
-##                               in shutdown, but the OS may still cut the
-##                               network before the POST lands.
+##                               gateway port every 2s and fires on BOTH edges:
+##                               down->up => "back online" (OS boot + gateway
+##                               restart return), up->down => "be right back"
+##                               (a gateway stop/restart while OS + net are up).
+##    "OpenClaw Shutdown Notify" fires on System event 1074 (OS shutdown/restart
+##                               initiated) and sends "be right back". BEST-
+##                               EFFORT: 1074 fires early in shutdown, but the OS
+##                               may cut the network before the POST lands. This
+##                               is the OS-shutdown case the watcher can't catch
+##                               (it gets killed too fast to poll the edge).
+##
+##  Greeting name: -OwnerName (defaults to the Windows username) -> "Hey <name>".
 ## ============================================================
 function Register-PresenceNotify {
-    param([string]$ChatId)
+    param([string]$ChatId, [string]$OwnerName)
     $dir = "$Home\.openclaw"
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
-    ## Watcher: down->up => "back online". Single-quoted here-string == literal;
-    ## __CHATID__ is injected, the token is read from .env at runtime.
+    ## Build the two messages, then double single quotes so they drop safely into
+    ## a single-quoted string in the generated scripts. Injection below uses
+    ## String.Replace (literal) -- safe for any name and any message content.
+    $who    = if ($OwnerName) { "$OwnerName, " } else { "" }
+    $online = ("Hey {0}I'm back online" -f $who)               -replace "'", "''"
+    $brb    = ("Hey {0}I'll be right back shortly .." -f $who) -replace "'", "''"
+
+    ## Watcher: polls the gateway port every 2s and fires on BOTH edges --
+    ## down->up => "back online" (boot / restart return), up->down => "be right
+    ## back" (a gateway stop/restart while the OS + network are still up). Single-
+    ## quoted here-string == literal; placeholders injected after; token at runtime.
     $watcher = @'
 $ErrorActionPreference = 'Continue'
 $chatId  = '__CHATID__'
-$msg     = 'Hey Doc, I''m back online'
+$online  = '__ONLINE__'
+$brb     = '__BRB__'
 $envFile = Join-Path $HOME '.openclaw\.env'
 $port = 18789
 try { $pp = (openclaw config get gateway.port) 2>$null; if ("$pp" -match '\d+') { $port = [int]$Matches[0] } } catch {}
@@ -2568,19 +2614,21 @@ function Send-Ping($text) {
     $tok = ((Get-Content $envFile | Where-Object { $_ -match '^TELEGRAM_BOT_TOKEN=' } | Select-Object -First 1) -replace '^TELEGRAM_BOT_TOKEN=','').Trim()
     if (-not $tok) { return }
     $uri = "https://api.telegram.org/bot$tok/sendMessage"
-    for ($i = 0; $i -lt 5; $i++) {
+    for ($i = 0; $i -lt 3; $i++) {
         try { Invoke-RestMethod -Method Post -Uri $uri -Body @{ chat_id = $chatId; text = $text } | Out-Null; break }
-        catch { Start-Sleep -Seconds 5 }
+        catch { Start-Sleep -Seconds 3 }
     }
 }
 $was = $false
 while ($true) {
     $now = Test-Up
-    if ($now -and -not $was) { Start-Sleep -Seconds 6; Send-Ping $msg }
+    if     ($now -and -not $was)   { Start-Sleep -Seconds 2; Send-Ping $online }
+    elseif ((-not $now) -and $was) { Send-Ping $brb }
     $was = $now
-    Start-Sleep -Seconds 20
+    Start-Sleep -Seconds 2
 }
-'@ -replace '__CHATID__', $ChatId
+'@
+    $watcher = $watcher.Replace('__CHATID__', $ChatId).Replace('__ONLINE__', $online).Replace('__BRB__', $brb)
     $watcherPs = Join-Path $dir 'presence-watch.ps1'
     [IO.File]::WriteAllText($watcherPs, $watcher, (New-Object Text.UTF8Encoding($false)))
 
@@ -2588,13 +2636,14 @@ while ($true) {
     $shut = @'
 $ErrorActionPreference = 'Continue'
 $chatId  = '__CHATID__'
-$msg     = 'Hey Doc, I''ll be right back shortly ..'
+$msg     = '__BRB__'
 $envFile = Join-Path $HOME '.openclaw\.env'
 if (Test-Path $envFile) {
     $tok = ((Get-Content $envFile | Where-Object { $_ -match '^TELEGRAM_BOT_TOKEN=' } | Select-Object -First 1) -replace '^TELEGRAM_BOT_TOKEN=','').Trim()
     if ($tok) { try { Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$tok/sendMessage" -Body @{ chat_id = $chatId; text = $msg } | Out-Null } catch {} }
 }
-'@ -replace '__CHATID__', $ChatId
+'@
+    $shut = $shut.Replace('__CHATID__', $ChatId).Replace('__BRB__', $brb)
     $shutPs = Join-Path $dir 'presence-shutdown.ps1'
     [IO.File]::WriteAllText($shutPs, $shut, (New-Object Text.UTF8Encoding($false)))
 
@@ -2720,9 +2769,10 @@ $StepAutoStart = {
         }
 
         ## ---- presence pings: "back online" (boot/restart) + "be right back" ----
-        Register-PresenceNotify -ChatId $TelegramId
-        Write-Host "  [presence] 'Hey Doc, I'm back online' ping ENABLED (on boot + gateway restart)." -ForegroundColor Green
-        Write-Host "  [presence] 'Hey Doc, I'll be right back shortly ..' ping ENABLED (on shutdown; best-effort)." -ForegroundColor Green
+        $who = if ($OwnerName) { $OwnerName } else { $env:USERNAME }
+        Register-PresenceNotify -ChatId $TelegramId -OwnerName $who
+        Write-Host "  [presence] 'Hey $who, I'm back online' ping ENABLED (on boot + gateway up/down)." -ForegroundColor Green
+        Write-Host "  [presence] 'Hey $who, I'll be right back shortly ..' ping ENABLED (gateway down + OS shutdown; best-effort)." -ForegroundColor Green
 
         Write-Host ""
         Write-Host "Tasks fire at LOGON (gateway/ollama) and on shutdown (the be-right-back" -ForegroundColor DarkGray
@@ -3041,40 +3091,23 @@ function Show-Menu {
             $lastGroup = $item.Group
         }
 
-        ## The bracket shows a per-step DONE mark, not a number -- navigation is
-        ## by arrow keys, and "which steps are already in place" is what you
-        ## actually want to see. 'x' = this step's outcome exists (derived from
-        ## live $Env); blank = not done or not applicable. (Number keys 1-9/0
-        ## still select by position; they just are not displayed.)
-        $e = $script:Env
-        $done = switch ($item.Key) {
-            'prereqs'   { [bool]($e.Npm -and $e.Npx) }
-            'hyperv'    { [bool]$e.HyperV }
-            'verify'    { [bool]$e.HyperV }
-            'android'   { [bool]$e.Avd }
-            'ollama'    { [bool]($e.Model -and (-not $Features.Mcp -or $e.ScrcpyMcp)) }
-            'token'     { [bool]$e.Token }
-            'openclaw'  { [bool]($e.OpenClaw -and $e.Cfg) }
-            'launchavd' { [bool]$e.Device }
-            'approve'   { [bool](Test-Path "$Home\.openclaw\devices\paired.json") }
-            default     { $false }
-        }
-        $mark = if ($done) { 'x' } else { ' ' }
-
+        ## A plain "-" bullet in front of every row -- no done/checkbox marker
+        ## (the old "[x]"/"[ ]" read as confusing). Navigation is by arrow keys;
+        ## number keys 1-9/0 still select the first ten by position, just not
+        ## displayed. Availability is shown by dimming greyed rows and by the
+        ## "unavailable: <why>" line under the cursor.
         if ($i -eq $Selected) {
             if (-not $on) {
-                Write-Host "  > [$mark] $($item.Label)".PadRight(64) -ForegroundColor DarkGray -BackgroundColor Black
+                Write-Host "  > - $($item.Label)".PadRight(64) -ForegroundColor DarkGray -BackgroundColor Black
             } else {
                 $bg = if ($item.Group -eq "DANGER") { "DarkRed" } else { "DarkCyan" }
-                Write-Host "  > [$mark] $($item.Label)".PadRight(64) -ForegroundColor White -BackgroundColor $bg
+                Write-Host "  > - $($item.Label)".PadRight(64) -ForegroundColor White -BackgroundColor $bg
             }
         } elseif (-not $on) {
             ## greyed out: dim everything
-            Write-Host "    [$mark] $($item.Label)" -ForegroundColor DarkGray
+            Write-Host "    - $($item.Label)" -ForegroundColor DarkGray
         } else {
-            Write-Host "    [" -ForegroundColor DarkGray -NoNewline
-            Write-Host $mark -ForegroundColor $(if ($done) { 'Green' } else { $item.Color }) -NoNewline
-            Write-Host "] " -ForegroundColor DarkGray -NoNewline
+            Write-Host "    - " -ForegroundColor DarkGray -NoNewline
             Write-Host $item.Label -ForegroundColor Gray
         }
     }

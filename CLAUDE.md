@@ -2,6 +2,23 @@
 
 Guidance for Claude Code sessions working in this repository.
 
+## Shared vocabulary: agent response categories
+
+When the user and this agent discuss what the **OpenClaw agent** (the bot on
+Telegram) emits, use these three terms so we mean the same thing:
+
+1. **Ack response** — the immediate acknowledgement received right after the
+   user's prompt.
+2. **In-between responses** — the streaming/thinking and processing, plus
+   command outputs, from the agent itself and any subagents.
+3. **Final output** — the last message, after which the agent goes idle waiting
+   for the next prompt.
+
+If the user says a category by name (e.g. "I'm not getting the *final output*"),
+scope the diagnosis to that category. A common failure with a small local model
+(qwen3.5 on 12 GB) is emitting only **in-between** narration and never producing
+a clean **final output** — a model-tier behavior, not a script bug.
+
 **Product facts live in [README.md](README.md)** — which is itself *generated from
 the scripts*. Read it first for: what the project is, the two editions, the
 pipeline diagram, every parameter, the full findings/gotchas list, the security
@@ -268,12 +285,14 @@ Check "Unregister-PresenceNotify defined" ([bool](Get-Command Unregister-Presenc
 Check "StepAutoStart wires presence pings" (($StepAutoStart.ToString() -match 'Register-PresenceNotify') -and ($StepAutoStart.ToString() -match 'Unregister-PresenceNotify'))
 $rpDef = (Get-Command Register-PresenceNotify).Definition
 Check "Presence msgs 'back online' + 'be right back' via Bot API" (($rpDef -match 'back online') -and ($rpDef -match 'be right back') -and ($rpDef -match 'api\.telegram\.org') -and ($rpDef -match '1074'))
+Check "Presence watcher fires on both edges (online + brb)" (($rpDef -match 'Send-Ping \$online') -and ($rpDef -match 'Send-Ping \$brb'))
+Check "Presence -OwnerName param on script + fn" ((((Get-Command $Lite).Parameters.ContainsKey('OwnerName'))) -and ((Get-Command Register-PresenceNotify).Parameters.ContainsKey('OwnerName')))
 
 Write-Host "`n== soft-test: $pass passed, $fail failed ==" -ForegroundColor (@('Green','Red')[[int]($fail -gt 0)])
 if ($fail -gt 0) { exit 1 }
 ```
 
-Expected on a clean tree: **74 passed, 0 failed**. A new menu item, a renamed
+Expected on a clean tree: **76 passed, 0 failed**. A new menu item, a renamed
 key, a broken `Enabled`/`Why`, a non-ASCII byte, an accidental BOM, generator
 drift, or a broken unattended path each turns a line red.
 

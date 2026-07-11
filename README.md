@@ -95,6 +95,21 @@ Full (fetches Lite too):
 \ = \
 ```
 
+Shortest (runs straight from memory, no temp file). Start an **Administrator**
+PowerShell first -- this form does not self-elevate, uses each script's default
+parameters, and the *Generate README* step is unavailable (there is no file on
+disk). Full still fetches Lite from the web on its own:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12GB_VRAM/main/OpenClaw_Ollama_12GB_VRAM_Lite.ps1)))   # Lite
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12GB_VRAM/main/OpenClaw_Ollama_12GB_VRAM_Full.ps1)))   # Full
+```
+
+`scriptblock::Create` is **not** `iex`: the `param()` block still binds (to its
+defaults), so this runs -- you just cannot pass `-NumCtx`/`-TelegramId` through
+it. To override parameters, or to get self-elevation and the docs generator, use
+the file-based one-liners above (or clone the repo).
+
 **Not** `irm ... | iex`. Both scripts declare `#Requires` and a `param()` block,
 and neither survives being piped through `Invoke-Expression`: parameters cannot
 bind, and the version check is skipped. Saving to a file first also means
@@ -218,6 +233,19 @@ powershell -ExecutionPolicy Bypass -File .\OpenClaw_Ollama_12GB_VRAM_Full.ps1
 Then work down the menu. Steps 1-7 run in order on a fresh machine, with a
 **reboot required between step 2 and step 3**. Steps grey out until their
 preconditions are met, and the reason is printed under the cursor.
+
+Step 2 (Hyper-V / WHPX) needs hardware virtualization **enabled in your
+BIOS/UEFI** (Intel VT-x / AMD-V). If step 2 or the emulator reports no
+acceleration, turn it on in firmware first -- Microsoft's guide walks through it:
+[Enable virtualization on Windows](https://support.microsoft.com/en-us/windows/experience/enable-virtualization-on-windows).
+
+Step 3 opens **Android Studio**; complete the first-run setup wizard, then use
+its **SDK Manager** to install the platform + system image (the step waits for
+the SDK to appear, then creates the `Pixel_5` AVD):
+
+![Android Studio SDK Manager -- SDK Platforms](images/sdk-manager-1.png)
+
+![Android Studio SDK Manager -- SDK Tools](images/sdk-manager-2.png)
 
 Before trusting anything: run *Status check*, then *Run the test suite*.
 
@@ -500,10 +528,10 @@ Edit these at the top of the script before the first run.
 
 ## Menu
 
-Navigate with the arrow keys. The bracket shows a per-step **done mark**
-(`[x]` when that step's outcome is already in place, derived from live state).
-Items grey out when their preconditions are unmet, with the reason shown under
-the cursor. The list is identical in both editions -- Full swaps its Android
+Navigate with the arrow keys; each row is a plain `-` bullet. Items grey out
+when their preconditions are unmet **or** the step is already done, with the
+reason shown under the cursor (e.g. *Already enabled.* for Hyper-V once it is on).
+The list is identical in both editions -- Full swaps its Android
 steps in by key, so a step's position never shifts (the `#` column below is that
 stable position).
 
