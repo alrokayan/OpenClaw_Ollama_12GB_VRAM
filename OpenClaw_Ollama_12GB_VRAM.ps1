@@ -2,26 +2,20 @@
 
 <#
 .SYNOPSIS
-    OpenClaw + Ollama, Lite. A local AI agent on Telegram, backed by a
-    model served from your own GPU. No Android, no MCP, no device control.
+    OpenClaw + Ollama. A local AI agent on Telegram, backed by a
+    model served from your own GPU, that drives an Android emulator.
 
 .DESCRIPTION
-    This is the base script. It installs and configures:
+    This single, self-contained script installs and configures:
 
       - Ollama serving qwen3.5:latest, context capped to 65536
       - The OpenClaw gateway, bound to loopback
       - A Telegram bot, DM-allowlisted to one user id
       - DuckDuckGo web search (key-free)
       - The Control UI dashboard
-
-    It is ALSO a library. OpenClaw_Ollama_12GB_VRAM_Full.ps1 sets
-    $global:OC_NoAutoStart, dot-sources this file, flips the flags in
-    $global:OC_Features, appends its own menu items, and calls Start-Menu.
-    Nothing in this file is duplicated there.
-
-      $OC_Features.Android     Android Studio, SDK, Pixel_5 AVD, Hyper-V
-      $OC_Features.Mcp         scrcpy-mcp as an MCP server
-      $OC_Features.DroidClaw   the DroidClaw device-control skill
+      - An Android emulator (Android Studio, SDK, Pixel_5 AVD, Hyper-V)
+      - mobile-mcp as an MCP server, plus a device-control skill so the
+        agent can drive the emulator
 
     WHY THE CONTEXT IS CAPPED
 
@@ -61,19 +55,19 @@
     No parameters. Edit the settings block near the top before first run.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\OpenClaw_Ollama_12GB_VRAM_Lite.ps1
+    powershell -ExecutionPolicy Bypass -File .\OpenClaw_Ollama_12GB_VRAM.ps1
 
     Opens the menu.
 
 .EXAMPLE
-    .\OpenClaw_Ollama_12GB_VRAM_Lite.ps1 -NumCtx 32768 -NoDashboard
+    .\OpenClaw_Ollama_12GB_VRAM.ps1 -NumCtx 32768 -NoDashboard
 
     Overrides. -NumCtx is range-validated, so a typo fails at parse time
     rather than halfway through configuring the gateway.
 
 .EXAMPLE
-    $f = "$env:TEMP\OpenClaw_Lite.ps1"
-    irm https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12GB_VRAM/main/OpenClaw_Ollama_12GB_VRAM_Lite.ps1 -OutFile $f
+    $f = "$env:TEMP\OpenClaw.ps1"
+    irm https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12GB_VRAM/main/OpenClaw_Ollama_12GB_VRAM.ps1 -OutFile $f
     Unblock-File $f
     & $f
 
@@ -128,9 +122,7 @@
 ##  Defaults are the values this build was tuned for. Override on the
 ##  command line rather than editing the file:
 ##
-##      .\OpenClaw_Ollama_12GB_VRAM_Lite.ps1 -NumCtx 32768 -NoDashboard
-##
-##  Full forwards its own parameters here when it dot-sources this file.
+##      .\OpenClaw_Ollama_12GB_VRAM.ps1 -NumCtx 32768 -NoDashboard
 ## ============================================================
 [CmdletBinding()]
 param(
@@ -180,14 +172,13 @@ param(
     ## a file picker. Relative paths resolve against the script directory.
     [string]$AutoXapkPath = "",
 
-    ## Run every menu step in order (both editions), non-interactively, writing
+    ## Run every menu step in order, non-interactively, writing
     ## full_test_report.md. Implies -Unattended. Ends in the DESTRUCTIVE
     ## uninstall -- only for a throwaway/VM box. See Start-FullTest.
     [switch]$RunAll,
 
     ## Launch/relaunch the AVD (cold boot) and exit, without opening the menu.
-    ## Full edition only (needs the emulator); a CLI shortcut for the menu's
-    ## "Launch / relaunch the AVD" item.
+    ## A CLI shortcut for the menu's "Launch / relaunch the AVD" item.
     [switch]$StartAvd
 )
 
@@ -196,10 +187,8 @@ $ErrorActionPreference = "Stop"
 ## ------------------------------------------------------------
 ##  Who is the entry point?
 ##
-##  When Full dot-sources this file, $PSCommandPath here points at LITE.
-##  Relaunching that for elevation would silently drop Android, MCP, and
-##  the skill. So the first script to load records itself, and Full sets
-##  these before dot-sourcing us.
+##  Record the invoked script + its args once, so an elevated relaunch
+##  (below) re-runs the same file with the same arguments.
 ## ------------------------------------------------------------
 if (-not $global:OC_EntryScript) {
     $global:OC_EntryScript = $PSCommandPath
@@ -234,25 +223,22 @@ $LogDir = Join-Path $BaseDir "logs"
 ## ============================================================
 ##  Feature flags
 ##
-##  Lite ships with all of these off. The Full script dot-sources this
-##  file, flips them on, appends its own menu items, and starts the menu.
-##  Nothing in this file is duplicated there.
-##
-##  Shared steps consult these flags rather than being rewritten, so
-##  there is exactly one implementation of "configure OpenClaw", "run the
-##  test suite", and "uninstall".
+##  One unified script: Android, the MCP, and the device skill are always
+##  on. These flags are the single switch left from the old Lite/Full split
+##  -- set one to $false (before launch, via $global:OC_Features) for an
+##  Android-less run. Shared steps consult them rather than being rewritten.
 ## ============================================================
 if (-not (Get-Variable -Name OC_Features -Scope Global -ErrorAction SilentlyContinue)) {
     $global:OC_Features = @{
-        Android   = $false   # Android Studio, SDK, the Pixel_5 AVD, Hyper-V/WHPX
-        Mcp       = $false   # scrcpy-mcp registered as an MCP server
-        DroidClaw = $false   # the DroidClaw skill
+        Android   = $true   # Android Studio, SDK, the Pixel_5 AVD, Hyper-V/WHPX
+        Mcp       = $true   # mobile-mcp registered as an MCP server
+        MobileMcpSkill = $true   # the mobile-mcp device-control skill
     }
 }
 $Features = $global:OC_Features
 
-## Shown in the banner. Full overrides this before calling Start-Menu.
-if (-not $script:Edition) { $script:Edition = "Lite" }
+## Shown in the banner.
+if (-not $script:Edition) { $script:Edition = "Android" }
 
 ## ------------------------------------------------------------
 ##  Unattended mode
@@ -316,7 +302,6 @@ function Update-EnvState {
     $s.Npm      = [bool](Get-Command npm      -ErrorAction SilentlyContinue)
     $s.Npx      = [bool](Get-Command npx      -ErrorAction SilentlyContinue)
     $s.Adb      = [bool](Get-Command adb      -ErrorAction SilentlyContinue)
-    $s.Scrcpy   = [bool](Get-Command scrcpy   -ErrorAction SilentlyContinue)
     $s.Emulator = [bool](Get-Command emulator -ErrorAction SilentlyContinue)
     $s.Ollama   = [bool](Get-Command ollama   -ErrorAction SilentlyContinue)
     $s.OpenClaw = [bool](Get-Command openclaw -ErrorAction SilentlyContinue)
@@ -370,9 +355,9 @@ function Update-EnvState {
         $s.Device = @(adb devices 2>$null | Where-Object { $_ -match '^\S+\s+device\s*$' }).Count -gt 0
     }
 
-    $s.ScrcpyMcp = $false
+    $s.MobileMcp = $false
     if ($s.Npm) {
-        $s.ScrcpyMcp = [bool](npm list -g --depth=0 2>$null | Select-String scrcpy-mcp)
+        $s.MobileMcp = [bool](npm list -g --depth=0 2>$null | Select-String '@mobilenext/mobile-mcp')
     }
 
     ## Anything at all to tear down?
@@ -713,8 +698,8 @@ $StepPrereqs = {
     ## (Ensure-Python3) -- it needs a 'python3.exe' shim, not just the package.
     $packages = @('Git.Git','7zip.7zip','OpenJS.NodeJS','Ollama.Ollama')
     if ($Features.Android) {
-        ## scrcpy ships adb; the JDK and ffmpeg are for Android Studio
-        $packages += @('Microsoft.OpenJDK.17','Genymobile.scrcpy','Gyan.FFmpeg')
+        ## the JDK is for Android Studio
+        $packages += @('Microsoft.OpenJDK.17')
     }
     foreach ($p in $packages) {
         Write-Host "installing $p" -ForegroundColor DarkGray
@@ -745,7 +730,7 @@ $StepPrereqs = {
 }
 
 ## ============================================================
-##  Step 5 -- scrcpy-mcp + Ollama + model
+##  Step 5 -- mobile-mcp + Ollama + model
 ## ============================================================
 $StepOllama = {
     ## npm and ollama stream progress/warnings to stderr, which is fatal under
@@ -755,8 +740,8 @@ $StepOllama = {
     $ErrorActionPreference = 'Continue'
 
     if ($Features.Mcp) {
-        npm install -g scrcpy-mcp
-        if ($LASTEXITCODE -ne 0) { throw "npm install -g scrcpy-mcp failed." }
+        npm install -g @mobilenext/mobile-mcp@latest
+        if ($LASTEXITCODE -ne 0) { throw "npm install -g @mobilenext/mobile-mcp failed." }
     }
 
     Get-Process ollama* -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -805,23 +790,23 @@ $StepOpenClaw = {
     $tokenValue = Get-SavedToken
     if (-not $tokenValue) { throw "No Telegram token saved. Run step [6] first." }
 
-    ## Preflight. droidclaw declares 'requires: bins: [adb, scrcpy]'; missing
+    ## Preflight. The mobile-mcp skill needs adb on PATH; missing
     ## either and the skill is silently ineligible -- the agent never learns it
     ## can drive the phone.
     $needed = @("npx","ollama")
-    if ($Features.Android) { $needed += @("adb","scrcpy") }
+    if ($Features.Android) { $needed += @("adb") }
     foreach ($bin in $needed) {
         if (-not (Get-Command $bin -ErrorAction SilentlyContinue)) {
             throw "$bin not on PATH. Open a NEW terminal."
         }
     }
     if ($Features.Mcp) {
-        if (-not (npm list -g --depth=0 2>$null | Select-String scrcpy-mcp)) {
-            throw "scrcpy-mcp missing. Install it first."
+        if (-not (npm list -g --depth=0 2>$null | Select-String '@mobilenext/mobile-mcp')) {
+            throw "mobile-mcp missing. Install it first."
         }
         ## No attached device looks exactly like "the model refused to call tools"
         if ((adb shell getprop sys.boot_completed 2>$null | Out-String).Trim() -ne "1") {
-            Write-Host "WARNING: AVD not booted. scrcpy tools will fail." -ForegroundColor Yellow
+            Write-Host "WARNING: AVD not booted. mobile-mcp tools will fail." -ForegroundColor Yellow
         }
     }
 
@@ -851,7 +836,7 @@ $StepOpenClaw = {
         if (-not (Test-Path $cfgDefault)) { throw "Onboarding did not write $cfgDefault within 5 min." }
     } else {
         Write-Host ">>> The OpenClaw TUI will open. Exit it (/exit or Ctrl+C) to continue." -ForegroundColor Yellow
-        ollama launch openclaw --model qwen3.5 --yes
+        #ollama launch openclaw --model qwen3.5 --yes
     }
 
     ## 'openclaw config file' can return a ~-prefixed path. PowerShell cmdlets
@@ -859,7 +844,8 @@ $StepOpenClaw = {
     ## below do NOT -- they resolve ~ against the current directory, so the .env
     ## write lands at <cwd>\~\.openclaw\.env and fails. Expand ~ to $Home once,
     ## here, so every later use (Split-Path, WriteAllLines) is an absolute path.
-    $cfg = (openclaw config file).Trim()
+    openclaw doctor --fix 2>$null
+    $cfg = (openclaw config file 2>$null).Trim()
     if ($cfg -like '~*') { $cfg = Join-Path $Home ($cfg -replace '^~[\\/]?', '') }
     if (-not (Test-Path $cfg)) { throw "No config at $cfg. Did onboarding fail?" }
     if (-not (Test-Path "$cfg.post-ollama-launch")) { Copy-Item $cfg "$cfg.post-ollama-launch" }
@@ -939,9 +925,9 @@ $StepOpenClaw = {
     if ($Features.Mcp) {
         ## cmd.exe wrapper: Node's spawn() throws ENOENT on bare 'npx' (no PATHEXT
         ## for child processes) and EINVAL on 'npx.cmd' (cannot spawn .cmd directly).
-        Patch "scrcpy mcp" @'
-{ mcp: { servers: { scrcpy: { command: "cmd.exe", args: ["/c","npx","scrcpy-mcp"] } } } }
-'@
+        ## --no-probe: the gateway is not running yet at this point in the setup.
+        openclaw mcp add mobile --command cmd.exe --arg /c --arg npx --arg -y --arg @mobilenext/mobile-mcp@latest --no-probe
+        if ($LASTEXITCODE -ne 0) { throw "openclaw mcp add mobile failed." }
     }
 
     ## DuckDuckGo is key-free but never auto-selected, since auto-detection only
@@ -951,90 +937,284 @@ $StepOpenClaw = {
   plugins: { entries: { duckduckgo: { config: { webSearch: { region: "us-en", safeSearch: "off" } } } } } }
 '@
 
-if ($Features.DroidClaw) {
+if ($Features.MobileMcpSkill) {
 
-    ## ---- DroidClaw skill ----
-    New-Item -ItemType Directory -Force "$Home\.openclaw\skills\droidclaw" | Out-Null
-    $skillDir       = "$Home\.openclaw\skills\droidclaw"
-    $sendScreenPath = Join-Path $skillDir "send-screen.ps1"
+    ## ---- mobile-skill skill ----
+    New-Item -ItemType Directory -Force "$Home\.openclaw\skills\mobile-skill" | Out-Null
+    $skillDir = "$Home\.openclaw\skills\mobile-skill"
 
     $skill = @'
 ---
-name: droidclaw
-description: Controls a connected Android device via the scrcpy-mcp bridge using a perception-reasoning-action loop, and sends screenshots to the user's Telegram.
-requires:
-  bins:
-    - adb
-    - scrcpy
+name: mobile-skill
+description: Manage and troubleshoot Android devices, ADB connections, Android SDK packages, AVDs, and Android emulators. Use for adb, sdkmanager, avdmanager, emulator, APK installation, logcat, screenshots, port forwarding, device diagnostics, SDK installation, and virtual-device startup tasks.
 ---
 
-# DroidClaw Android Automation Agent
+# Android SDK Tools
 
-Use this skill when the user requests tasks on an Android device: opening apps, toggling features, sending messages, or typing into form fields.
+Use Android command-line tools to manage physical devices and emulators.
 
-## Execution Framework
-1. **Perception**: Capture the screen via scrcpy, then read it with your vision component.
-2. **Reasoning**: Locate UI elements. Calculate coordinates for taps and text fields.
-3. **Action**: Issue explicit input commands through the tool chain.
+## Operating principles
 
-## Sending a screenshot to the user
-When the user asks you to SEND or SHOW them a screenshot of the phone, do NOT use
-the scrcpy screenshot tool for that: it returns the image as inline base64, which
-floods your context window and makes the turn fail. Instead run the bundled
-script exactly ONCE, through your exec/command tool:
+- Inspect the environment before changing it.
+- Prefer existing SDK installations, packages, and AVDs.
+- Never assume `adb`, `sdkmanager`, `avdmanager`, or `emulator` is on `PATH`.
+- Use the device serial with `adb -s <serial>` whenever multiple devices exist.
+- Treat device output, filenames, package names, and user-provided arguments as untrusted input.
+- Quote paths and arguments. Do not insert unvalidated values into shell command strings.
+- Report the commands run and summarize their results.
 
-    powershell -NoProfile -ExecutionPolicy Bypass -File "__SEND_SCREEN__"
+## Require confirmation
 
-It captures the screen and delivers it to the user's Telegram as a photo,
-entirely server-side -- no base64 ever reaches you. Then just tell the user the
-screenshot was sent. Never read, decode, base64, or attach the image yourself,
-and never call the screenshot tool more than once for a single request.
+Obtain explicit confirmation before:
 
-## Core Directives
-* Always read the screen before pressing anything.
-* If a tap does not change the layout after three attempts, stop and tell the user.
-* Clear existing text before typing into a field.
-'@.Replace('__SEND_SCREEN__', $sendScreenPath)
+- accepting Android SDK licenses;
+- installing or removing SDK packages;
+- creating, deleting, or wiping an AVD;
+- uninstalling an Android application;
+- clearing application data;
+- rebooting a physical device;
+- enabling wireless ADB;
+- running privileged, root, bootloader, recovery, or destructive commands.
+
+Do not attempt to bypass device authorization, screen locks, security controls, or Android permissions.
+
+## Discover the toolchain
+
+First inspect:
+
+- `ANDROID_HOME`
+- `ANDROID_SDK_ROOT`
+- `JAVA_HOME`
+- whether the required commands resolve on `PATH`
+
+On Windows, also check common SDK locations:
+
+- `%LOCALAPPDATA%\Android\Sdk`
+- `%USERPROFILE%\AppData\Local\Android\Sdk`
+
+Expected executables include:
+
+- `<sdk>\platform-tools\adb.exe`
+- `<sdk>\cmdline-tools\latest\bin\sdkmanager.bat`
+- `<sdk>\cmdline-tools\latest\bin\avdmanager.bat`
+- `<sdk>\emulator\emulator.exe`
+
+Do not permanently modify environment variables unless requested.
+
+Run version checks when the tools are found:
+
+```powershell
+& $adb version
+& $sdkmanager --version
+& $emulator -version
+java -version
+```
+
+If a tool is missing, explain which Android SDK component provides it. Do not download or install software without confirmation.
+
+## Select a device
+
+List devices before issuing device-specific commands:
+
+```powershell
+& $adb devices -l
+```
+
+Interpret states:
+
+- `device`: ready
+- `offline`: restart or reconnect
+- `unauthorized`: ask the user to approve the RSA prompt on the device
+- no entry: inspect the cable, USB debugging, driver, emulator state, or ADB server
+
+If exactly one ready device exists, use it. If multiple devices are ready and the user did not identify one, ask which serial to use.
+
+Store the selected serial and use:
+
+```powershell
+& $adb -s $serial <command>
+```
+
+## Diagnose ADB
+
+Use the least invasive sequence:
+
+```powershell
+& $adb devices -l
+& $adb start-server
+& $adb devices -l
+```
+
+Use `adb kill-server` only when restarting the server is justified.
+
+For a selected device, gather basic facts:
+
+```powershell
+& $adb -s $serial shell getprop ro.product.manufacturer
+& $adb -s $serial shell getprop ro.product.model
+& $adb -s $serial shell getprop ro.build.version.release
+& $adb -s $serial shell getprop ro.build.version.sdk
+& $adb -s $serial shell wm size
+& $adb -s $serial shell wm density
+```
+
+Do not dump sensitive device data unnecessarily.
+
+## Work with SDK packages
+
+Inspect installed and available packages:
+
+```powershell
+& $sdkmanager --list
+```
+
+Before installing, state the exact package identifiers and expected purpose.
+
+Typical packages include:
+
+```text
+platform-tools
+emulator
+cmdline-tools;latest
+platforms;android-<api>
+build-tools;<version>
+system-images;android-<api>;google_apis;x86_64
+```
+
+After receiving confirmation, install exact identifiers:
+
+```powershell
+& $sdkmanager "platform-tools" "emulator"
+```
+
+Do not automatically select the newest API level when project files specify a required `compileSdk`, `targetSdk`, build-tools version, or emulator image.
+
+## Manage AVDs
+
+List existing AVDs and compatible targets:
+
+```powershell
+& $emulator -list-avds
+& $avdmanager list avd
+& $avdmanager list device
+& $sdkmanager --list
+```
+
+Prefer an existing compatible AVD.
+
+Before creating an AVD, confirm:
+
+- AVD name
+- API level
+- image flavor
+- architecture
+- hardware profile
+
+After confirmation, create it using exact values:
+
+```powershell
+"no" | & $avdmanager create avd `
+  --name $avdName `
+  --package $systemImage `
+  --device $deviceProfile
+```
+
+Validate names and package identifiers against command output before execution.
+
+## Start an emulator
+
+Start an existing AVD without wiping its state:
+
+```powershell
+& $emulator -avd $avdName
+```
+
+Use additional flags only when needed:
+
+```text
+-no-snapshot-load
+-no-boot-anim
+-no-window
+-gpu auto
+-port <even-number>
+```
+
+Do not use `-wipe-data` without explicit confirmation.
+
+Wait for the emulator to appear in `adb devices`, then check boot completion:
+
+```powershell
+& $adb -s $serial wait-for-device
+& $adb -s $serial shell getprop sys.boot_completed
+```
+
+Continue only when the result is `1`. Use a bounded timeout and report failure rather than waiting forever.
+
+## Install and inspect applications
+
+Verify an APK exists before installation:
+
+```powershell
+& $adb -s $serial install -r -- $apkPath
+```
+
+Do not add `-d`, `-g`, or `-t` unless the task requires it and their effects are explained.
+
+Inspect a package:
+
+```powershell
+& $adb -s $serial shell pm path $packageName
+& $adb -s $serial shell dumpsys package $packageName
+```
+
+Validate package names using this pattern before placing them in commands:
+
+```text
+^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$
+```
+
+## Collect diagnostics
+
+Use bounded log collection instead of leaving `logcat` running indefinitely:
+
+```powershell
+& $adb -s $serial logcat -d -t 500
+```
+
+Filter by a known tag, PID, or package when possible. Avoid exposing tokens, account data, personal messages, or unrelated application logs.
+
+Capture a screenshot when useful:
+
+```powershell
+& $adb -s $serial exec-out screencap -p > $outputPath
+```
+
+Verify the output file exists and is non-empty.
+
+## Verify completion
+
+After making a change:
+
+1. Re-run the relevant listing or status command.
+2. Confirm the expected device, package, SDK component, or AVD exists.
+3. Report the selected SDK path and device serial.
+4. Mention warnings, authorization prompts, reboots, or manual steps.
+5. Never claim success based only on a command exit code when state can be checked.
+'@
 
     ## A BOM before the opening --- breaks YAML frontmatter and the skill never
     ## loads. Set-Content -Encoding utf8 writes a BOM on PS 5.1; this does not.
     [IO.File]::WriteAllText("$skillDir\SKILL.md", $skill,
         (New-Object Text.UTF8Encoding($false)))
 
-    ## Bundled deterministic screenshot -> Telegram sender. The base64 NEVER
-    ## enters the model context (that overflows the 64k window and the turn dies);
-    ## capture + send happen entirely server-side. exec-out is binary-safe (adb
-    ## shell would CRLF-mangle the PNG). Media MUST live under ~/.openclaw/media --
-    ## OpenClaw's outbound sandbox rejects --media from any other directory.
-    $sendScreen = @'
-$ErrorActionPreference = 'Continue'
-$target = '__TELEGRAM_ID__'
-$med = Join-Path $HOME '.openclaw\media'
-New-Item -ItemType Directory -Force $med | Out-Null
-$png = Join-Path $med 'droidclaw-screen.png'
-cmd /c "adb exec-out screencap -p > `"$png`""
-$len = (Get-Item $png -ErrorAction SilentlyContinue).Length
-if ($len -gt 1000) {
-    openclaw message send --channel telegram --target $target --media $png | Out-Null
-    Write-Output "screenshot sent ($([int]($len/1KB)) KB)"
-} else {
-    Write-Output "capture failed ($len bytes) -- is the emulator running and rendering?"
-}
-'@.Replace('__TELEGRAM_ID__', $TelegramId)
-    [IO.File]::WriteAllText($sendScreenPath, $sendScreen, (New-Object Text.UTF8Encoding($false)))
-
-    ## limits lives at skills.limits, NOT skills.load.limits. Getting this wrong
-    ## makes the config invalid, and 'doctor --fix' then silently restores
-    ## last-known-good and discards every patch above.
-    ## maxSkillsInPrompt 10 (was 5): with an Android device the agent needs the
-    ## droidclaw skill to actually land in the prompt, so it uses the bundled
-    ## send-screen.ps1 instead of the context-flooding scrcpy screenshot tool.
-    ## maxSkillsPromptChars 4000 still caps the total, so the prompt stays small.
+    ## maxSkillsInPrompt 10 (was 5): with a mobile device the agent needs the
+    ## mobile-skill skill to actually land in the prompt.
+    ## maxSkillsPromptChars 8000
     Patch "skills" @'
 { skills: {
     allowBundled: [],
     load: { extraDirs: ["~/.openclaw/skills"] },
-    limits: { maxSkillsInPrompt: 10, maxSkillsPromptChars: 4000 } } }
+    limits: { maxSkillsInPrompt: 10, maxSkillsPromptChars: 8000 } } }
 '@
 
 } else {
@@ -1089,12 +1269,12 @@ if ($len -gt 1000) {
     openclaw infer model run --local   --model "ollama/$Model" --prompt "Reply with exactly: pong" --json
     openclaw infer model run --gateway --model "ollama/$Model" --prompt "Reply with exactly: pong" --json
 
-    Write-Host "`n=== 3. MCP tools discovered? (must list scrcpy TOOLS) ===" -ForegroundColor Cyan
+    Write-Host "`n=== 3. MCP tools discovered? (must list mobile TOOLS) ===" -ForegroundColor Cyan
     openclaw mcp status --verbose
     openclaw mcp doctor --probe
 
-    Write-Host "`n=== 4. droidclaw skill loaded? ===" -ForegroundColor Cyan
-    openclaw skills info droidclaw
+    Write-Host "`n=== 4. mobile-skill skill loaded? ===" -ForegroundColor Cyan
+    openclaw skills info mobile-skill
 
     Write-Host "`n=== 5. num_ctx applied, still on GPU? (want $NumCtx / 100% GPU) ===" -ForegroundColor Cyan
     ollama ps
@@ -1161,12 +1341,11 @@ $StepSuite = {
 
     if ($Features.Android) {
         Test-Case "adb on PATH" { [bool](Get-Command adb -ErrorAction SilentlyContinue) } "Install the Android SDK."
-        Test-Case "scrcpy on PATH" { [bool](Get-Command scrcpy -ErrorAction SilentlyContinue) } "winget install Genymobile.scrcpy"
     }
     if ($Features.Mcp) {
-        Test-Case "scrcpy-mcp installed globally" {
-            [bool](npm list -g --depth=0 2>$null | Select-String scrcpy-mcp)
-        } "npm install -g scrcpy-mcp"
+        Test-Case "mobile-mcp installed globally" {
+            [bool](npm list -g --depth=0 2>$null | Select-String '@mobilenext/mobile-mcp')
+        } "npm install -g @mobilenext/mobile-mcp@latest"
     }
 
     Test-Case "ollama daemon answering" {
@@ -1242,20 +1421,20 @@ $StepSuite = {
         (ollama ps 2>$null | Out-String) -match '100% GPU'
     } "KV cache spilled to CPU. Lower num_ctx (and contextTokens/contextWindow with it)."
 
-    if ($Features.Mcp -or $Features.DroidClaw) {
+    if ($Features.Mcp -or $Features.MobileMcpSkill) {
         Write-Rule "tools" DarkCyan
     }
 
     if ($Features.Mcp) {
-        Test-Case "scrcpy MCP server started" {
+        Test-Case "mobile MCP server started" {
             $out = openclaw mcp status --verbose 2>$null | Out-String
-            ($out -match 'scrcpy') -and ($out -notmatch 'failed to start')
-        } "ENOENT on 'npx', EINVAL on 'npx.cmd'. Use cmd.exe /c npx scrcpy-mcp."
+            ($out -match 'mobile') -and ($out -notmatch 'failed to start')
+        } "ENOENT on 'npx', EINVAL on 'npx.cmd'. Use cmd.exe /c npx -y @mobilenext/mobile-mcp@latest."
     }
 
-    if ($Features.DroidClaw) {
-        Test-Case "droidclaw skill loaded" {
-            openclaw skills info droidclaw *>$null
+    if ($Features.MobileMcpSkill) {
+        Test-Case "mobile-skill skill loaded" {
+            openclaw skills info mobile-skill *>$null
             $LASTEXITCODE -eq 0
         } "A BOM before the opening --- breaks the YAML frontmatter silently."
     }
@@ -1284,10 +1463,9 @@ $StepSuite = {
 ## ============================================================
 ##  Step 8 -- agent tests
 ## ============================================================
-## Defined here so Full can use it unchanged. Lite never lists it in the
-## menu: with no MCP tools and no device, these prompts have nothing to do.
+## The three agent tests drive the device over the MCP bridge.
 $StepTest = {
-    if (-not $Features.Mcp) { throw "Agent device tests need the MCP bridge (Full)." }
+    if (-not $Features.Mcp) { throw "Agent device tests need the MCP bridge (Features.Mcp)." }
 
     ## 'openclaw agent' streams to stderr (and node prints gateway diagnostics
     ## there); fatal under Stop even when a prompt completes. Continue so all
@@ -1351,10 +1529,8 @@ $StepTest = {
         if ($Probe -and $adb) { & $Probe }
     }
 
-    ## 1. Screenshot -- ask in plain language so the agent routes through the
-    ##    DroidClaw send-screen.ps1 path (server-side capture + Telegram media),
-    ##    NOT the scrcpy screenshot tool whose inline base64 floods the 64k context
-    ##    and kills the turn. The adb probe below independently confirms rendering.
+    ## 1. Screenshot -- ask in plain language so the agent uses mobile-mcp's
+    ##    mobile_save_screenshot tool to capture and deliver the screen.
     Invoke-AgentTest "1. Screenshot" `
         'Send me a screenshot of the current phone screen.' `
         {
@@ -1368,7 +1544,7 @@ $StepTest = {
 
     ## 2. Home key
     Invoke-AgentTest "2. Home key" `
-        'Press the device Home button (via the scrcpy key_event tool, or adb shell input keyevent HOME) to reset to a known state' `
+        'Press the device Home button (via adb shell input keyevent HOME) to reset to a known state' `
         {
             $fw = & $adb shell dumpsys window 2>$null | Select-String 'mCurrentFocus' | Select-Object -First 1
             $focus = if ($fw) { $fw.Line.Trim() } else { "n/a" }
@@ -1454,8 +1630,7 @@ $StepStatus = {
     Write-Rule "toolchain" DarkCyan
     Row "node"       $(if (Get-Command node -EA SilentlyContinue) { (node --version) } else { "missing" }) $e.Npm
     Row "adb"        $(if ($e.Adb)    { "present" } else { "missing" }) $e.Adb
-    Row "scrcpy"     $(if ($e.Scrcpy) { "present" } else { "missing" }) $e.Scrcpy
-    Row "scrcpy-mcp" $(if ($e.ScrcpyMcp) { "installed" } else { "missing" }) $e.ScrcpyMcp
+    Row "mobile-mcp" $(if ($e.MobileMcp) { "installed" } else { "missing" }) $e.MobileMcp
     Row "ollama"     $(if ($e.Ollama) { "present" } else { "missing" }) $e.Ollama
     Row "openclaw"   $(if ($e.OpenClaw) { (openclaw --version 2>$null | Select-Object -First 1) } else { "missing" }) $e.OpenClaw
 
@@ -1550,8 +1725,8 @@ $StepStatus = {
 
     ## ---- skill ----
     Write-Host ""
-    Write-Rule "droidclaw skill" DarkCyan
-    $skillPath = "$Home\.openclaw\skills\droidclaw\SKILL.md"
+    Write-Rule "mobile-skill skill" DarkCyan
+    $skillPath = "$Home\.openclaw\skills\mobile-skill\SKILL.md"
     if (Test-Path $skillPath) {
         Row "SKILL.md" "present" $true
         ## A BOM here silently breaks the YAML frontmatter
@@ -1559,7 +1734,7 @@ $StepStatus = {
         $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
         Row "no BOM" $(if ($hasBom) { "HAS BOM" } else { "clean" }) (-not $hasBom)
         if ($e.OpenClaw) {
-            openclaw skills info droidclaw *>$null
+            openclaw skills info mobile-skill *>$null
             Row "loaded by openclaw" $(if ($LASTEXITCODE -eq 0) { "yes" } else { "no" }) ($LASTEXITCODE -eq 0)
         }
     } else {
@@ -1570,7 +1745,7 @@ $StepStatus = {
     Write-Host ""
     Write-Rule "" DarkGray
     $ready = $e.HyperV -and $e.Adb -and $e.Device -and $e.Ollama -and $e.Model -and
-             $e.OpenClaw -and $e.Cfg -and $e.Token -and $e.ScrcpyMcp
+             $e.OpenClaw -and $e.Cfg -and $e.Token -and $e.MobileMcp
     if ($ready) {
         Write-Host "  READY" -ForegroundColor Green -NoNewline
         Write-Host " -- run the test suite to confirm the tool chain." -ForegroundColor Gray
@@ -1583,7 +1758,7 @@ $StepStatus = {
         if (-not $e.Device)    { Write-Host "    a running device  (start the emulator)" -ForegroundColor DarkYellow }
         if (-not $e.Ollama)    { Write-Host "    ollama            (step 1)" -ForegroundColor DarkYellow }
         if (-not $e.Model)     { Write-Host "    $Model            (step 5)" -ForegroundColor DarkYellow }
-        if (-not $e.ScrcpyMcp) { Write-Host "    scrcpy-mcp        (step 5)" -ForegroundColor DarkYellow }
+        if (-not $e.MobileMcp) { Write-Host "    mobile-mcp        (step 5)" -ForegroundColor DarkYellow }
         if (-not $e.Token)     { Write-Host "    telegram token    (step 6)" -ForegroundColor DarkYellow }
         if (-not $e.OpenClaw)  { Write-Host "    openclaw          (step 7)" -ForegroundColor DarkYellow }
     }
@@ -1663,9 +1838,9 @@ $StepReadme = {
     Add-Line '```'
     Add-Line "  Telegram  -->  OpenClaw gateway  -->  Ollama (qwen3.5, 64k ctx)"
     Add-Line "                       |"
-    Add-Line "                       +-->  MCP: scrcpy-mcp  -->  adb  -->  Pixel_5 AVD"
+    Add-Line "                       +-->  MCP: mobile-mcp  -->  adb  -->  Pixel_5 AVD"
     Add-Line "                       |"
-    Add-Line "                       +-->  skill: droidclaw (perception / reason / act)"
+    Add-Line "                       +-->  skill: mobile-skill (inspect / reason / act)"
     Add-Line '```'
     Add-Line ""
     Add-Line "The emulator renders in hardware (``-gpu host``) but is pinned to the **integrated**"
@@ -1675,84 +1850,47 @@ $StepReadme = {
     Add-Line "on the build host, so hardware GL on the iGPU is the reliable way to the same goal."
     Add-Line ""
 
-    ## ---------------- editions ----------------
-    Add-Line "## Two editions"
+    ## ---------------- install ----------------
+    Add-Line "## Install"
     Add-Line ""
-    Add-Line "**Lite** is the whole local AI assistant *without* Android: Ollama + qwen3.5, the"
-    Add-Line "OpenClaw gateway, your Telegram bot, web search, and the Control UI dashboard."
-    Add-Line "Reach for it when you just want a private chat agent running on your own hardware."
+    Add-Line "This is a single, self-contained script. It installs Ollama + qwen3.5, the"
+    Add-Line "OpenClaw gateway with your Telegram bot, web search, and the Control UI"
+    Add-Line "dashboard, plus an Android emulator (Android Studio + a Pixel_5 AVD) that the"
+    Add-Line "agent drives over mobile-mcp -- so the bot can see the screen and tap, type,"
+    Add-Line "and swipe on it."
     Add-Line ""
-    Add-Line "**Full** is Lite *plus* everything needed to give that agent a phone to drive: it"
-    Add-Line "enables Hyper-V/WHPX, installs Android Studio and a Pixel_5 AVD, bridges the"
-    Add-Line "emulator over scrcpy-mcp, and loads the DroidClaw skill -- so the bot can see the"
-    Add-Line "screen and tap, type, and swipe on it. Everything Lite does, Full does too; the"
-    Add-Line "Android rows below are the only difference."
-    Add-Line ""
-    Add-Line "| | Lite | Full |"
-    Add-Line "| --- | --- | --- |"
-    Add-Line "| Ollama + qwen3.5 @ 64k | yes | yes |"
-    Add-Line "| OpenClaw gateway, loopback | yes | yes |"
-    Add-Line "| Telegram bot, allowlisted | yes | yes |"
-    Add-Line "| DuckDuckGo search | yes | yes |"
-    Add-Line "| Control UI dashboard | yes | yes |"
-    Add-Line "| Test suite, status, uninstall | yes | yes |"
-    Add-Line "| Hyper-V / WHPX | no | yes |"
-    Add-Line "| Android Studio + Pixel_5 AVD | no | yes |"
-    Add-Line "| scrcpy-mcp bridge | no | yes |"
-    Add-Line "| DroidClaw skill | no | yes |"
-    Add-Line "| .xapk / .obb installer | no | yes |"
-    Add-Line "| Approve paired devices | yes | yes |"
-    Add-Line ""
-    Add-Line "Full does not copy Lite. It sets ``\$global:OC_NoAutoStart``, dot-sources the Lite"
-    Add-Line "script, flips three flags in ``\$global:OC_Features``, defines the four"
-    Add-Line "Android-only steps, rebuilds the menu, and calls ``Start-Menu``. Shared steps read"
-    Add-Line "the flags rather than being duplicated, so there is exactly one implementation"
-    Add-Line "of *configure OpenClaw*, *run the test suite*, and *uninstall*."
-    Add-Line ""
-
-    ## ---------------- one-liners ----------------
-    Add-Line "## One-liner install"
-    Add-Line ""
-    Add-Line "Lite:"
+    Add-Line "One-liner install:"
     Add-Line ""
     Add-Line '```powershell'
-    Add-Line "\$f = \"\$env:TEMP\OpenClaw_Lite.ps1\"; irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM_Lite.ps1 -OutFile \$f; Unblock-File \$f; & \$f"
+    Add-Line "\$f = \"\$env:TEMP\OpenClaw.ps1\"; irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM.ps1 -OutFile \$f; Unblock-File \$f; & \$f"
     Add-Line '```'
     Add-Line ""
-    Add-Line "Full (fetches Lite too):"
+    Add-Line "Or run straight from memory. It uses the script's **default parameters** (you"
+    Add-Line "cannot pass ``-NumCtx``/``-TelegramId`` through it) and the *Generate README*"
+    Add-Line "step is unavailable (no file on disk):"
     Add-Line ""
     Add-Line '```powershell'
-    Add-Line "\$f = \"\$env:TEMP\OpenClaw_Full.ps1\"; irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM_Full.ps1 -OutFile \$f; Unblock-File \$f; & \$f"
-    Add-Line '```'
-    Add-Line ""
-    Add-Line "Shortest -- runs straight from memory. It uses each script's **default"
-    Add-Line "parameters** (you cannot pass ``-NumCtx``/``-TelegramId`` through it) and the"
-    Add-Line "*Generate README* step is unavailable (no file on disk). Full still fetches Lite"
-    Add-Line "from the web on its own, and self-elevates by relaunching that saved copy:"
-    Add-Line ""
-    Add-Line '```powershell'
-    Add-Line "& ([scriptblock]::Create((irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM_Lite.ps1)))   # Lite"
-    Add-Line "& ([scriptblock]::Create((irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM_Full.ps1)))   # Full"
+    Add-Line "& ([scriptblock]::Create((irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM.ps1)))"
     Add-Line '```'
     Add-Line ""
     Add-Line "``scriptblock::Create`` is **not** ``iex``: the ``param()`` block still binds (to its"
     Add-Line "defaults), so this runs and still prompts to self-elevate -- you just cannot pass"
     Add-Line "``-NumCtx``/``-TelegramId`` through it. To override parameters or use the docs"
-    Add-Line "generator, use the file-based one-liners above (or clone the repo)."
+    Add-Line "generator, use the file-based one-liner above (or clone the repo)."
     Add-Line ""
-    Add-Line "**Not** ``irm ... | iex``. Both scripts declare ``#Requires`` and a ``param()`` block,"
+    Add-Line "**Not** ``irm ... | iex``. The script declares ``#Requires`` and a ``param()`` block,"
     Add-Line "and neither survives being piped through ``Invoke-Expression``: parameters cannot"
     Add-Line "bind, and the version check is skipped. Saving to a file first also means"
     Add-Line "``\$PSCommandPath`` is set, so self-elevation and the docs generator both work."
     Add-Line ""
-    Add-Line "> **Read this before running either.** These download code and execute it"
+    Add-Line "> **Read this before running.** These download code and execute it"
     Add-Line "> immediately, with no review, no signature, and no checksum. Whoever controls"
     Add-Line "> that URL controls your machine, and the script will ask for Administrator."
     Add-Line "> The convenience is real; so is the risk. The file lands in ``\$env:TEMP`` -- open"
     Add-Line "> it and read it before you let it run."
     Add-Line ""
-    Add-Line "Both scripts offer to relaunch themselves elevated, forwarding whatever"
-    Add-Line "arguments you gave them."
+    Add-Line "The script offers to relaunch itself elevated, forwarding whatever"
+    Add-Line "arguments you gave it."
     Add-Line ""
 
     ## ---------------- parameters ----------------
@@ -1761,8 +1899,8 @@ $StepReadme = {
     Add-Line "Override on the command line rather than editing the file:"
     Add-Line ""
     Add-Line '```powershell'
-    Add-Line ".\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -NumCtx 32768 -TelegramId 123456789"
-    Add-Line ".\OpenClaw_Ollama_12GB_VRAM_Lite.ps1 -NoDashboard -NoElevate"
+    Add-Line ".\OpenClaw_Ollama_12GB_VRAM.ps1 -NumCtx 32768 -TelegramId 123456789"
+    Add-Line ".\OpenClaw_Ollama_12GB_VRAM.ps1 -NoDashboard -NoElevate"
     Add-Line '```'
     Add-Line ""
     Add-Line "| Parameter | Default | Notes |"
@@ -1771,15 +1909,15 @@ $StepReadme = {
     Add-Line "| ``-Model`` | ``$Model`` | |"
     Add-Line "| ``-NumCtx`` | ``$NumCtx`` | drop to 32768 if ``ollama ps`` stops saying 100% GPU |"
     Add-Line "| ``-GatewayPort`` | ``$GatewayPort`` | loopback only |"
-    Add-Line "| ``-AvdName`` | ``$AvdName`` | Full only |"
-    Add-Line "| ``-SysImage`` | (Android 37.1 ps16k x86_64) | Full only |"
+    Add-Line "| ``-AvdName`` | ``$AvdName`` | |"
+    Add-Line "| ``-SysImage`` | (Android 37.1 ps16k x86_64) | |"
     Add-Line "| ``-NoDashboard`` | off | omit the controlUi block from openclaw.json |"
     Add-Line "| ``-LicenseHolder`` | ``$LicenseHolder`` | written into LICENSE |"
     Add-Line "| ``-NoElevate`` | off | skip the Administrator relaunch prompt |"
     Add-Line "| ``-Unattended`` | off | never block on a human: prompts take their default, no 'press any key', the onboarding TUI is launched detached and killed once it writes config. Set OC_UNATTENDED=1 in the environment to force it |"
     Add-Line "| ``-AutoXapkPath`` | (none) | package the .xapk step installs when unattended, skipping the file picker |"
     Add-Line "| ``-RunAll`` | off | drive every menu step end-to-end, non-interactively, writing ``full_test_report.md``. Implies ``-Unattended`` and ends in the **destructive uninstall** -- VM/throwaway only |"
-    Add-Line "| ``-StartAvd`` | off | launch/relaunch the AVD (cold boot) and exit, without the menu. Full only |"
+    Add-Line "| ``-StartAvd`` | off | launch/relaunch the AVD (cold boot) and exit, without the menu |"
     Add-Line ""
     Add-Line "``-NumCtx`` is range-validated (4096-262144) and ``-GatewayPort`` (1024-65535), so a"
     Add-Line "typo fails at parse time rather than halfway through configuring the gateway."
@@ -1794,7 +1932,7 @@ $StepReadme = {
     Add-Line "   or headless:"
     Add-Line ""
     Add-Line '```powershell'
-    Add-Line ".\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -StartAvd"
+    Add-Line ".\OpenClaw_Ollama_12GB_VRAM.ps1 -StartAvd"
     Add-Line '```'
     Add-Line ""
     Add-Line "   It stops any running instance (``qemu-system-x86_64`` holds the locks, not the"
@@ -1829,7 +1967,7 @@ $StepReadme = {
     Add-Line "3. Click each > **Options** > **Power saving** (this is the integrated GPU) > **Save**."
     Add-Line "   (Choose *High performance* instead if you have no iGPU and want the discrete card.)"
     Add-Line "4. In Android Studio's Device Manager, set the AVD's **Graphics = Hardware - GLES 2.0**."
-    Add-Line "5. Relaunch: ``.\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -StartAvd``."
+    Add-Line "5. Relaunch: ``.\OpenClaw_Ollama_12GB_VRAM.ps1 -StartAvd``."
     Add-Line ""
     Add-Line "Equivalent to the manual steps, done in one line (what the script runs), for each exe:"
     Add-Line ""
@@ -1861,9 +1999,8 @@ $StepReadme = {
     Add-Line "Copy-Item env.example env"
     Add-Line "notepad env"
     Add-Line ""
-    Add-Line "# Run as Administrator. Pick one:"
-    Add-Line "powershell -ExecutionPolicy Bypass -File .\OpenClaw_Ollama_12GB_VRAM_Lite.ps1"
-    Add-Line "powershell -ExecutionPolicy Bypass -File .\OpenClaw_Ollama_12GB_VRAM_Full.ps1"
+    Add-Line "# Run as Administrator:"
+    Add-Line "powershell -ExecutionPolicy Bypass -File .\OpenClaw_Ollama_12GB_VRAM.ps1"
     Add-Line '```'
     Add-Line ""
     Add-Line "Then work down the menu. Steps 1-7 run in order on a fresh machine, with a"
@@ -1926,7 +2063,7 @@ $StepReadme = {
     Add-Line ""
     Add-Line '```'
     Add-Line "  Here is the command we will run:"
-    Add-Line "      scrcpy --screenshot screenshot.png"
+    Add-Line "      adb screenshot --out screenshot.png"
     Add-Line "  Do you want to proceed?"
     Add-Line '```'
     Add-Line ""
@@ -2034,7 +2171,7 @@ $StepReadme = {
     Add-Line "| --- | --- |"
     Add-Line "| ``spawn npx ENOENT`` although ``npx --version`` works | Node's ``spawn()`` gets no PATHEXT resolution for child processes |"
     Add-Line "| ``spawn EINVAL`` after switching to ``npx.cmd`` | Node cannot spawn ``.cmd`` files directly |"
-    Add-Line "| Both | Use ``command: \"cmd.exe\", args: [\"/c\",\"npx\",\"scrcpy-mcp\"]`` |"
+    Add-Line "| Both | Use ``command: \"cmd.exe\", args: [\"/c\",\"npx\",\"-y\",\"@mobilenext/mobile-mcp@latest\"]`` |"
     Add-Line "| ``jq: Invalid numeric literal at line 1, column 3`` | PS 5.1's ``>`` redirection writes **UTF-16LE**, not UTF-8 |"
     Add-Line "| ``config set`` reports success but changes nothing / leaves a duplicate | **JSON passed as a command-line argument**: PowerShell 5.1 strips the embedded quotes before the native exe sees it, so the ``id`` is lost. Pipe JSON via ``--stdin`` or ``--batch-file``, never as an arg. (PS 7 handles args differently; stdin/file is robust on both.) |"
     Add-Line "| Skill silently never loads | ``Set-Content -Encoding utf8`` writes a **BOM**; a BOM before ``---`` breaks YAML frontmatter |"
@@ -2096,7 +2233,7 @@ $StepReadme = {
     Add-Line "> instructions. The content itself is a threat surface, not just the sender."
     Add-Line ""
     Add-Line "This build combines a small local model (the weakest tier for injection"
-    Add-Line "resistance), real device-control tools (adb, scrcpy, shell), and web search."
+    Add-Line "resistance), real device-control tools (adb, shell), and web search."
     Add-Line "That is the exact three-way combination the docs warn about."
     Add-Line ""
     Add-Line "If you do not need the agent to search the web, set the search provider to"
@@ -2133,20 +2270,17 @@ $StepReadme = {
     Add-Line "Navigate with the arrow keys; each row is a plain ``-`` bullet. Items grey out"
     Add-Line "when their preconditions are unmet **or** the step is already done, with the"
     Add-Line "reason shown under the cursor (e.g. *Already enabled.* for Hyper-V once it is on)."
-    Add-Line "The list is identical in both editions -- Full swaps its Android"
-    Add-Line "steps in by key, so a step's position never shifts (the ``#`` column below is that"
-    Add-Line "stable position)."
+    Add-Line "The ``#`` column below is each step's stable menu position."
     Add-Line ""
     Add-Line "![The interactive menu](images/menu.png)"
     Add-Line ""
-    Add-Line "| # | Step | Group | Edition | Unavailable when |"
-    Add-Line "| --- | --- | --- | --- | --- |"
+    Add-Line "| # | Step | Group | Unavailable when |"
+    Add-Line "| --- | --- | --- | --- |"
     for ($i = 0; $i -lt $script:Items.Count; $i++) {
         $n = if ($i -lt 9) { "$($i + 1)" } elseif ($i -eq 9) { "0" } else { "-" }
         $raw = if ($script:Items[$i].Why -is [scriptblock]) { & $script:Items[$i].Why } else { $script:Items[$i].Why }
         $why = if ($raw) { ($raw -replace '\|', '\|') } else { "always available" }
-        $ed  = if ($script:Items[$i].Key -in @("hyperv","verify","android","agent","xapk","launchavd")) { "Full" } else { "both" }
-        Add-Line "| $n | $($script:Items[$i].Label) | $($script:Items[$i].Group) | $ed | $why |"
+        Add-Line "| $n | $($script:Items[$i].Label) | $($script:Items[$i].Group) | $why |"
     }
     Add-Line ""
     Add-Line "*Status check* output (host, GPUs, virtualization, toolchain, model, device,"
@@ -2216,8 +2350,7 @@ $StepReadme = {
     Add-Line ""
     Add-Line "| File | Committed? | Notes |"
     Add-Line "| --- | --- | --- |"
-    Add-Line "| ``OpenClaw_Ollama_12GB_VRAM_Lite.ps1`` | yes | base script, and a library |"
-    Add-Line "| ``OpenClaw_Ollama_12GB_VRAM_Full.ps1`` | yes | loads Lite, adds Android |"
+    Add-Line "| ``OpenClaw_Ollama_12GB_VRAM.ps1`` | yes | the single, self-contained script |"
     Add-Line "| ``README.md`` | yes | generated |"
     Add-Line "| ``LICENSE`` | yes | generated, MIT |"
     Add-Line "| ``.gitignore`` | yes | generated |"
@@ -2409,7 +2542,7 @@ $StepUninstall = {
     if ((Read-Prompt "Type 'yes' to continue" "yes") -ne 'yes') { Write-Host "Aborted."; return }
 
     $keepModels  = (Read-Prompt "Keep ~/.ollama (qwen3.5 is 6.6 GB)? (Y/n)" "y") -ne 'n'
-    $keepPrereqs = (Read-Prompt "Keep node/git/python/jq/scrcpy/ffmpeg? (Y/n)" "y") -ne 'n'
+    $keepPrereqs = (Read-Prompt "Keep node/git/python/jq? (Y/n)" "y") -ne 'n'
     $keepHyperV  = (Read-Prompt "Keep Hyper-V (WSL2 and Docker need it too)? (Y/n)" "y") -ne 'n'
 
     $ErrorActionPreference = 'Continue'   # most of these fail if not installed
@@ -2433,11 +2566,10 @@ $StepUninstall = {
     schtasks /Delete /F /TN "OpenClaw Gateway" 2>$null
     schtasks /Delete /F /TN "ClawdBot Gateway" 2>$null
     Get-Process openclaw*     -ErrorAction SilentlyContinue | Stop-Process -Force
-    Get-Process node          -ErrorAction SilentlyContinue | Where-Object { $_.Path -match "openclaw|clawdbot|scrcpy-mcp" } | Stop-Process -Force
+    Get-Process node          -ErrorAction SilentlyContinue | Where-Object { $_.Path -match "openclaw|clawdbot|mobile-mcp" } | Stop-Process -Force
     Get-Process qemu-system-* -ErrorAction SilentlyContinue | Stop-Process -Force   # the real AVD process
     Get-Process emulator*     -ErrorAction SilentlyContinue | Stop-Process -Force   # only the launcher
     Get-Process studio64      -ErrorAction SilentlyContinue | Stop-Process -Force
-    Get-Process scrcpy        -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process ollama*       -ErrorAction SilentlyContinue | Stop-Process -Force
     if (Get-Command adb -ErrorAction SilentlyContinue) { adb kill-server 2>$null }
     Start-Sleep 2
@@ -2446,7 +2578,7 @@ $StepUninstall = {
     Kill-FileLock -Path "$Home\.openclaw\state\openclaw.sqlite"
     cmd /c "openclaw uninstall --all --yes --non-interactive" 2>$null
     cmd /c "npm uninstall -g openclaw" 2>$null
-    cmd /c "npm uninstall -g scrcpy-mcp" 2>$null
+    cmd /c "npm uninstall -g @mobilenext/mobile-mcp" 2>$null
     Remove-Item "$env:USERPROFILE\.openclaw" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item "$env:USERPROFILE\.clawdbot" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item "$env:APPDATA\OpenClaw"      -Recurse -Force -ErrorAction SilentlyContinue
@@ -2483,7 +2615,7 @@ $StepUninstall = {
     if (-not $keepPrereqs) {
         Write-Host "`n-- prerequisites --" -ForegroundColor Cyan
         ## winget uninstall takes ONE id per call
-        $packages = @('Git.Git','7zip.7zip','OpenJS.NodeJS','Microsoft.OpenJDK.17','Genymobile.scrcpy','Gyan.FFmpeg')
+        $packages = @('Git.Git','7zip.7zip','OpenJS.NodeJS','Microsoft.OpenJDK.17')
         foreach ($p in $packages) { winget uninstall --id $p --all-versions --silent --accept-source-agreements 2>$null }
     }
 
@@ -2538,7 +2670,7 @@ $StepDashboard = {
 
     Write-Host ""
     Write-Host "The Activity tab shows the live tool-call stream -- the fastest way" -ForegroundColor DarkGray
-    Write-Host "to see whether the model is actually calling scrcpy tools, or just" -ForegroundColor DarkGray
+    Write-Host "to see whether the model is actually calling adb tools, or just" -ForegroundColor DarkGray
     Write-Host "narrating shell commands as text." -ForegroundColor DarkGray
     Write-Host ""
 
@@ -2772,7 +2904,7 @@ function Unregister-PresenceNotify {
 ##
 ##    "OpenClaw Gateway"  Created by OpenClaw's own onboarding (step 7). A
 ##                        logon-triggered task that runs ~/.openclaw/gateway.vbs
-##                        hidden. The gateway spawns scrcpy-mcp as a *child* MCP
+##                        hidden. The gateway spawns mobile-mcp as a *child* MCP
 ##                        server, so enabling the gateway task covers the MCP
 ##                        too -- there is nothing separate to toggle for it.
 ##
@@ -2812,7 +2944,7 @@ $StepAutoStart = {
     $color   = { param($s) if ($s -eq 'enabled') { 'Green' } elseif ($s -eq 'absent') { 'DarkGray' } else { 'Yellow' } }
 
     Write-Host "Current auto-start-on-boot state:" -ForegroundColor Cyan
-    Write-Host ("  OpenClaw gateway (+ scrcpy-mcp) : {0}" -f $gwState) -ForegroundColor (& $color $gwState)
+    Write-Host ("  OpenClaw gateway (+ mobile-mcp)  : {0}" -f $gwState) -ForegroundColor (& $color $gwState)
     Write-Host ("  Ollama serve                   : {0}" -f $olState) -ForegroundColor (& $color $olState)
     Write-Host ""
 
@@ -2823,12 +2955,12 @@ $StepAutoStart = {
     $enable  = ($ans -notmatch '^\s*[dD]')
 
     if ($enable) {
-        ## ---- OpenClaw gateway (+ scrcpy-mcp child) ----
+        ## ---- OpenClaw gateway (+ mobile-mcp child) ----
         if ($gwState -eq 'absent') {
             Write-Host "  [gateway] task not found -- run step [7] (OpenClaw onboarding) to create it." -ForegroundColor Yellow
         } else {
             Enable-ScheduledTask -TaskName $gwTask | Out-Null
-            Write-Host "  [gateway] auto-start ENABLED (logon trigger; scrcpy-mcp follows as its child)." -ForegroundColor Green
+            Write-Host "  [gateway] auto-start ENABLED (logon trigger; mobile-mcp follows as its child)." -ForegroundColor Green
         }
 
         ## ---- Ollama serve ----
@@ -2895,7 +3027,7 @@ $StepAutoStart = {
 ##  Read-Prompt default, so nothing blocks.
 ##
 ##  Current catalog:
-##    scrcpy-mcp       MCP server -- fast Android screen control + screenshots
+##    mobile-mcp       MCP server -- mobile automation (Android + iOS)
 ##                     (returns PNGs as proper MCP image content blocks).
 ##    context7         Skill @thesethrose/context7 -- on-demand, version-accurate
 ##                     library/API docs for the agent.
@@ -2926,19 +3058,15 @@ $StepSkills = {
 
     $catalog = @(
         [PSCustomObject]@{
-            Name = "scrcpy-mcp"; Kind = "MCP server"
-            Desc = "Fast Android screen control + screenshots (PNGs as MCP image blocks)."
+            Name = "mobile-mcp"; Kind = "MCP server"
+            Desc = "Mobile automation and screen control (Android + iOS) via @mobilenext/mobile-mcp."
             Install = {
-                ## npx fetches on demand, but a global install pre-warms the first
-                ## gateway launch. Native command -> Continue + exit-code gate.
-                $ErrorActionPreference = 'Continue'
-                npm install -g scrcpy-mcp
-                $ErrorActionPreference = 'Stop'
-                ## Register it so the gateway spawns it. cmd.exe wrapper: Node's
-                ## spawn() throws on bare 'npx'/'npx.cmd' (see the openclaw step).
-                Patch "scrcpy mcp" @'
-{ mcp: { servers: { scrcpy: { command: "cmd.exe", args: ["/c","npx","scrcpy-mcp"] } } } }
-'@
+                ## Register via the official CLI. It probes the server before saving.
+                ## cmd.exe wrapper: Node's spawn() throws on bare 'npx'/'npx.cmd'.
+                openclaw mcp add mobile --command cmd.exe --arg /c --arg npx --arg -y --arg @mobilenext/mobile-mcp@latest
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "  (exited $LASTEXITCODE -- may already be registered; 'openclaw mcp list' to check)" -ForegroundColor DarkGray
+                }
             }
         }
         [PSCustomObject]@{
@@ -2999,34 +3127,492 @@ $StepSkills = {
 ## ============================================================
 ##  The menu, in run order.
 ##
-##  ONE canonical list, shared by both editions, so a number always means
-##  the same step: [4] is "Install the AVD" in Lite and in Full alike.
-##
-##  Full-only steps are present here as disabled placeholders. Full loads
-##  this file, then calls Set-MenuItem to swap in the real Action and
-##  Enabled predicate for each. The numbering never shifts.
+##  ONE canonical list. A number always means the same step: [4] is
+##  "Install the AVD".
 ##
 ##  Each item:
-##    Key      stable identifier, used by Set-MenuItem
+##    Key      stable identifier
 ##    Enabled  predicate over $script:Env; false greys the row out
 ##    Why      string or scriptblock explaining a greyed row
 ## ============================================================
-$FullOnly = "Full edition only. This step needs the Android emulator."
+## ============================================================
+##  Android steps: Hyper-V/WHPX, Android Studio + Pixel_5 AVD,
+##  .xapk install, and AVD launch. (Merged in from the old Full edition.)
+## ============================================================
+## ============================================================
+##  Hyper-V
+## ============================================================
+$StepHyperV = {
+    ## Enabling the leaf features directly keeps the management tools
+    ## Disabled. Checking "Hyper-V" in the GUI feature tree does not.
+    Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Hypervisor -NoRestart
+    Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Services   -NoRestart
+    Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform           -NoRestart
+
+    Write-Host ""
+    Write-Host "REBOOT REQUIRED before the emulator can use WHPX." -ForegroundColor Yellow
+    Write-Host "Also enable virtualization (VT-x / AMD-V) in BIOS if you have not." -ForegroundColor Yellow
+}
+
+## ============================================================
+##  Verify Hyper-V / WHPX
+## ============================================================
+$StepVerifyHyperV = {
+    Get-WindowsOptionalFeature -Online |
+        Where-Object FeatureName -like '*Hyper*' |
+        Select-Object FeatureName, State | Format-Table -AutoSize | Out-Host
+
+    Write-Host "Expect Enabled : HypervisorPlatform, Microsoft-Hyper-V-All," -ForegroundColor DarkGray
+    Write-Host "                 Microsoft-Hyper-V, -Hypervisor, -Services"  -ForegroundColor DarkGray
+    Write-Host "Expect Disabled: -Tools-All, -Management-PowerShell, -Management-Clients" -ForegroundColor DarkGray
+    Write-Host ""
+
+    if (Get-Command emulator -ErrorAction SilentlyContinue) {
+        $accel = emulator -accel-check 2>&1 | Out-String
+        Write-Host $accel
+        if ($accel -notmatch 'WHPX') { throw "No WHPX acceleration. Check the reboot and BIOS." }
+        Write-Host "WHPX acceleration confirmed." -ForegroundColor Green
+    } else {
+        Write-Host "emulator not on PATH yet -- run step [4], then re-check." -ForegroundColor Yellow
+    }
+}
+
+## ============================================================
+##  Pin the emulator's renderer to the INTEGRATED GPU
+##
+##  Windows routes each app to a GPU via a per-exe preference in
+##  HKCU\...\DirectX\UserGpuPreferences: "GpuPreference=1" = power saving =
+##  the integrated GPU, "=2" = high performance = the discrete card. Pinning
+##  emulator.exe AND its real renderer qemu-system-x86_64.exe to the iGPU is
+##  what lets the AVD render hardware-accelerated on the Intel/AMD iGPU while
+##  the discrete GPU's VRAM stays 100% for the model -- the whole point on a
+##  12 GB card. On a machine with no iGPU, "power saving" maps to the only GPU:
+##  harmless. This is the OS-level half of "use hardware GL"; '-gpu host' +
+##  hw.gpu.mode=host is the emulator half.
+## ============================================================
+function Set-EmulatorGpuPreference {
+    $emuDir = "$env:LOCALAPPDATA\Android\Sdk\emulator"
+    $exes = @("$emuDir\emulator.exe",
+              "$emuDir\qemu\windows-x86_64\qemu-system-x86_64.exe")
+    $key = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+    if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+    foreach ($exe in $exes) {
+        if (Test-Path $exe) {
+            New-ItemProperty -Path $key -Name $exe -Value 'GpuPreference=1;' -PropertyType String -Force | Out-Null
+            Write-Host ">>> Pinned to integrated GPU: $(Split-Path $exe -Leaf)" -ForegroundColor DarkGray
+        }
+    }
+}
+
+## ============================================================
+##  Android Studio, SDK, Pixel_5 AVD
+##
+##  Android 37 system images exist only as 16KB page-size variants:
+##  google_apis_ps16k, not plain google_apis.
+##  avdmanager creates the AVD AND its .ini pointer; do not hand-write them.
+##  "emulator" only launches AVDs; "avdmanager" creates them.
+## ============================================================
+$StepAndroid = {
+    ## adb prints to stderr constantly ("daemon not running; starting now",
+    ## "no devices/emulators found" during the boot poll), which is fatal under
+    ## the global Stop preference and once failed this step mid-boot even though
+    ## the AVD came up fine. sdkmanager/avdmanager failures are still caught by
+    ## their explicit $LASTEXITCODE checks, and the boot poll has its own
+    ## deadline + throw, so Continue is safe here.
+    $ErrorActionPreference = 'Continue'
+
+    $studioExe = "C:\Program Files\Android\Android Studio\bin\studio64.exe"
+    $sdkPath   = "$env:LOCALAPPDATA\Android\Sdk"
+    $sdkManagerBat = "$sdkPath\cmdline-tools\latest\bin\sdkmanager.bat"
+
+    if (Test-Path $studioExe) {
+        Write-Host ">>> Android Studio already installed." -ForegroundColor Green
+    } else {
+        winget install Google.AndroidStudio --accept-package-agreements --accept-source-agreements --wait
+    }
+
+    ## The SDK + command-line tools come from the Studio setup wizard -- a GUI
+    ## with no headless entry point, and the ONE thing that needs a human. On a
+    ## re-run the tools are already installed, so skip the wizard entirely.
+    if (Test-Path $sdkManagerBat) {
+        Write-Host ">>> SDK command-line tools already present; skipping the setup wizard." -ForegroundColor Green
+    } else {
+        if (Test-Path $studioExe) {
+            Write-Host ">>> Launching Android Studio to complete SDK setup..." -ForegroundColor Cyan
+            Start-Process -FilePath $studioExe -Verb RunAs
+        }
+        Write-Host ""
+        Write-Host "==========================================================" -ForegroundColor Yellow
+        Write-Host "ACTION REQUIRED: finish the Android Studio Setup Wizard." -ForegroundColor Yellow
+        Write-Host "Then SDK Manager > SDK Tools, enable:" -ForegroundColor Yellow
+        Write-Host "    Android SDK Command-line Tools (latest)" -ForegroundColor Yellow
+        Write-Host "    Google USB Driver" -ForegroundColor Yellow
+        Write-Host "==========================================================" -ForegroundColor Yellow
+        if ($Unattended) {
+            ## Unattended still can't click the GUI, but a human can while the run
+            ## waits. Read-Host would need an interactive console (a background /
+            ## -RunAll run has none), so POLL for the SDK to appear instead. This
+            ## keeps the run going hands-off everywhere else while pausing here for
+            ## you to finish the wizard. Generous deadline; throws if it never lands.
+            Write-Host ">>> [auto] Waiting up to 45 min for the SDK command-line tools to appear" -ForegroundColor DarkGray
+            Write-Host ">>>        (finish the wizard + SDK Tools > Command-line Tools)..." -ForegroundColor DarkGray
+            $deadline = (Get-Date).AddMinutes(45)
+            while ((Get-Date) -lt $deadline -and -not (Test-Path $sdkManagerBat)) { Start-Sleep -Seconds 10 }
+            if (-not (Test-Path $sdkManagerBat)) {
+                throw "SDK command-line tools never appeared at $sdkManagerBat. Finish the Studio wizard (SDK Tools > Command-line Tools), then re-run."
+            }
+            Write-Host ">>> SDK command-line tools detected; continuing." -ForegroundColor Green
+        } else {
+            Read-Host "Press Enter once SDK setup is complete"
+        }
+    }
+
+    if (-not (Test-Path $sdkPath)) { throw "Android SDK not found at $sdkPath. Finish the wizard, then re-run." }
+
+    $platformTools = "$sdkPath\platform-tools"
+    $cmdlineTools  = "$sdkPath\cmdline-tools\latest\bin"
+    $emulatorPath  = "$sdkPath\emulator"
+
+    [Environment]::SetEnvironmentVariable("ANDROID_HOME", $sdkPath, "User")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    foreach ($dir in ($platformTools, $cmdlineTools, $emulatorPath)) {
+        if ($userPath -notlike "*$dir*") { $userPath = "$userPath;$dir" }
+    }
+    [Environment]::SetEnvironmentVariable("Path", $userPath, "User")
+
+    ## Update this process too, so adb/emulator resolve immediately
+    $env:ANDROID_HOME = $sdkPath
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + $userPath
+
+    ## Resolve by explicit path: a freshly-set PATH may not reach child processes
+    $sdkManager = "$cmdlineTools\sdkmanager.bat"
+    $avdManager = "$cmdlineTools\avdmanager.bat"
+    if (-not (Test-Path $sdkManager)) {
+        throw "sdkmanager missing. SDK Manager > SDK Tools > Android SDK Command-line Tools (latest)."
+    }
+
+    $acceptLicenses = (1..20 | ForEach-Object { "y" })
+
+    Write-Host ">>> Updating SDK tooling..." -ForegroundColor Cyan
+    & $sdkManager --update
+
+    Write-Host ">>> Downloading system image and tools..." -ForegroundColor Cyan
+    $acceptLicenses | & $sdkManager "emulator" "platform-tools" "platforms;android-37.1" $SysImage
+    if ($LASTEXITCODE -ne 0) { throw "SDK component download failed." }
+
+    Write-Host ">>> Creating the $AvdName AVD..." -ForegroundColor Cyan
+    ## -d is the device profile. Do NOT use -b: that flag is --abi.
+    "no" | & $avdManager create avd -n $AvdName -d "pixel_5" -k $SysImage --force
+    if ($LASTEXITCODE -ne 0) { throw "avdmanager failed to create the AVD." }
+
+    ## Opt out of emulator metrics persistently. -no-metrics covers the running
+    ## instance; this skips the one-time prompt. Best effort: ignored if the key
+    ## names change, and it will not break the launch.
+    $androidCfgDir = "$env:USERPROFILE\.android"
+    New-Item -ItemType Directory -Path $androidCfgDir -Force | Out-Null
+    Set-Content -Path "$androidCfgDir\analytics.settings" `
+        -Value '{"userId":"","hasOptedIn":false,"debugDisablePings":true}' -Encoding ascii
+
+    Write-Host ">>> Writing config.ini..." -ForegroundColor Cyan
+    $configPath = "$env:USERPROFILE\.android\avd\$AvdName.avd\config.ini"
+    $configContent = @(
+        "AvdId=$AvdName",
+        'PlayStore.enabled=false',
+        'abi.type=x86_64',
+        'avd.ini.displayname=Pixel 5',
+        'avd.ini.encoding=UTF-8',
+        'disk.dataPartition.size=16G',
+        # Snapshots fully disabled. "Quick boot" IS snapshot loading, so it cannot
+        # coexist with this. Cold boot every time; that also removes the
+        # "Bug report interrupted by snapshot load" popup at its source.
+        'fastboot.chosenSnapshotFile=',
+        'fastboot.forceChosenSnapshotBoot=no',
+        'fastboot.forceColdBoot=yes',
+        'fastboot.forceFastBoot=no',
+        'hw.accelerometer=yes',
+        'hw.arc=false',
+        'hw.audioInput=yes',
+        'hw.battery=yes',
+        'hw.camera.back=virtualscene',
+        'hw.camera.front=emulated',
+        'hw.cpu.arch=x86_64',
+        # 4 cores: software GL is CPU-bound.
+        'hw.cpu.ncore=4',
+        'hw.dPad=no',
+        'hw.device.hash2=MD5:12ab7fcb681cafc1697d019f385bf3b9',
+        'hw.device.manufacturer=Google',
+        'hw.device.name=pixel_5',
+        'hw.gps=yes',
+        # Hardware rendering (Device Manager "Graphics" = Hardware - GLES).
+        # Software 'swiftshader_indirect' rendered a BLANK/white framebuffer on
+        # the build host (RTX 4070 Ti + i7-13700K) -- the OS booted but nothing
+        # painted, breaking the vision loop. Hardware GL renders reliably, and
+        # Set-EmulatorGpuPreference below pins it to the INTEGRATED GPU so the
+        # discrete card's VRAM stays entirely for the model. The in-emulator
+        # Settings > Advanced control is a RUNTIME override that resets to auto
+        # on reboot; config.ini plus the -gpu launch flag persist.
+        'hw.gpu.enabled=yes',
+        'hw.gpu.mode=host',
+        'hw.gyroscope=yes',
+        'hw.initialOrientation=portrait',
+        'hw.keyboard=yes',
+        'hw.keyboard.charmap=qwerty2',
+        'hw.keyboard.lid=yes',
+        'hw.lcd.density=440',
+        'hw.lcd.height=2340',
+        'hw.lcd.width=1080',
+        'hw.mainKeys=no',
+        'hw.ramSize=3072',
+        'hw.sdCard=yes',
+        'hw.sensors.light=yes',
+        'hw.sensors.magnetic_field=yes',
+        'hw.sensors.orientation=yes',
+        'hw.sensors.pressure=yes',
+        'hw.sensors.proximity=yes',
+        'hw.trackBall=no',
+        'image.sysdir.1=system-images\android-37.1\google_apis_ps16k\x86_64\',
+        'runtime.network.latency=none',
+        'runtime.network.speed=full',
+        'sdcard.size=512M',
+        # No skin: no need for the bezel art
+        'showDeviceFrame=no',
+        'tag.display=Google APIs',
+        'tag.id=google_apis_ps16k',
+        'target=android-37.1',
+        'vm.heapSize=256'
+    )
+    Set-Content -Path $configPath -Value $configContent
+
+    ## Start-Process, not "& emulator.exe": a console-attached launch ties the
+    ## emulator's lifetime to this window.
+    Set-EmulatorGpuPreference   # render on the iGPU, keep the dGPU for the model
+    Write-Host ">>> Launching $AvdName (detached)..." -ForegroundColor Green
+    Start-Process -FilePath "$emulatorPath\emulator.exe" `
+        -ArgumentList '-avd',$AvdName,'-gpu','host',
+                      '-no-snapshot','-no-snapshot-save','-no-snapshot-load',
+                      '-no-boot-anim','-no-metrics' `
+        -WindowStyle Hidden
+
+    ## Do NOT use 'adb wait-for-device': it blocks forever with no timeout if
+    ## the emulator failed to start. Poll instead -- adb shell against no device
+    ## errors, 2>$null eats it, and the loop times out cleanly.
+    adb start-server
+    Write-Host ">>> Waiting for Android to finish booting..." -ForegroundColor Cyan
+    $booted = ""
+    $deadline = (Get-Date).AddMinutes(5)
+    while ((Get-Date) -lt $deadline) {
+        $booted = (adb shell getprop sys.boot_completed 2>$null | Out-String).Trim()
+        if ($booted -eq "1") { break }
+        Start-Sleep -Seconds 5
+    }
+    if ($booted -ne "1") { throw "AVD never finished booting. Check the emulator window." }
+    Write-Host ">>> AVD booted." -ForegroundColor Green
+    adb devices
+}
+
+
+## ============================================================
+##  Install an .xapk / .apks onto the AVD
+##
+##  An .xapk is a ZIP holding a base APK plus split config APKs
+##  (per-ABI / per-density / per-language). Plain 'adb install' cannot
+##  handle splits, so extract everything and use 'adb install-multiple'.
+##  Games often ship an .obb alongside; that has to be pushed separately
+##  or the app installs and then crashes looking for its assets.
+## ============================================================
+$StepXapk = {
+    ## adb (install / install-multiple / push / devices) writes to stderr, fatal
+    ## under the global Stop preference; real failures are caught by the explicit
+    ## $LASTEXITCODE checks below, so Continue.
+    $ErrorActionPreference = 'Continue'
+
+    ## Unattended takes the package from -AutoXapkPath (relative paths resolve
+    ## against the script dir), skipping the GUI picker entirely.
+    $XapkPath = $null
+    if ($Unattended) {
+        if ([string]::IsNullOrWhiteSpace($AutoXapkPath)) {
+            throw "Unattended .xapk install needs -AutoXapkPath (e.g. -AutoXapkPath .\Tinder.xapk)."
+        }
+        $XapkPath = if ([IO.Path]::IsPathRooted($AutoXapkPath)) { $AutoXapkPath } else { Join-Path $BaseDir $AutoXapkPath }
+        Write-Host ">>> [auto] Package: $XapkPath" -ForegroundColor DarkGray
+    }
+    ## A GUI picker beats typing a Windows path. Falls back to Read-Host if
+    ## WinForms is unavailable (Server Core, PS in a non-STA host, etc).
+    elseif ($true) {
+      try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $dlg = New-Object System.Windows.Forms.OpenFileDialog
+        $dlg.Title  = "Pick an .xapk / .apks / .apk"
+        $dlg.Filter = "Android packages (*.xapk;*.apks;*.apk)|*.xapk;*.apks;*.apk|All files (*.*)|*.*"
+        $dlg.InitialDirectory = [Environment]::GetFolderPath('UserProfile') + "\Downloads"
+        $dlg.Multiselect = $false
+
+        Write-Host "Opening file picker..." -ForegroundColor DarkGray
+        ## Force the dialog in front of the console window
+        $dlg.ShowHelp = $false
+        if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $XapkPath = $dlg.FileName
+        } else {
+            Write-Host "Cancelled." -ForegroundColor Yellow
+            return
+        }
+      } catch {
+        Write-Host "File picker unavailable; type or drag-and-drop the path." -ForegroundColor DarkGray
+        $XapkPath = Read-Host "Full path to the .xapk / .apks / .apk"
+      }
+    }
+
+    ## Drag-and-drop into a console wraps the path in quotes
+    $XapkPath = $XapkPath.Trim().Trim('"')
+    if ([string]::IsNullOrWhiteSpace($XapkPath)) { throw "No file selected." }
+    if (-not (Test-Path $XapkPath)) { throw "File not found: $XapkPath" }
+    Write-Host ">>> Package: $(Split-Path $XapkPath -Leaf)" -ForegroundColor Cyan
+
+    $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+    if (-not (Test-Path $adb)) { $adb = (Get-Command adb -ErrorAction SilentlyContinue).Source }
+    if (-not $adb) { throw "adb not found. Run step [4] or add adb to PATH." }
+
+    ## @(...) forces an array, so a single device stays a string rather than
+    ## becoming an indexable char sequence.
+    $devices = @(& $adb devices | Select-Object -Skip 1 |
+        Where-Object { $_ -match '\sdevice$' } |
+        ForEach-Object { ($_ -split '\s+')[0] })
+    if (-not $devices) { throw "No running device. Start the AVD first (step [4])." }
+    if ($devices.Count -gt 1) {
+        Write-Host "Attached: $($devices -join ', ')" -ForegroundColor Yellow
+        $serial = Read-Host "Which serial"
+    } else {
+        $serial = $devices[0]
+    }
+    Write-Host ">>> Target: $serial" -ForegroundColor Cyan
+
+    ## Plain .apk needs no unpacking
+    if ([IO.Path]::GetExtension($XapkPath) -eq ".apk") {
+        & $adb -s $serial install -r $XapkPath
+        if ($LASTEXITCODE -ne 0) { throw "Install failed (exit $LASTEXITCODE)." }
+        Write-Host ">>> Success." -ForegroundColor Green
+        return
+    }
+
+    $work = Join-Path $env:TEMP ("xapk_" + [IO.Path]::GetFileNameWithoutExtension($XapkPath))
+    if (Test-Path $work) { Remove-Item $work -Recurse -Force }
+    New-Item -ItemType Directory -Path $work -Force | Out-Null
+
+    try {
+        Write-Host ">>> Extracting..." -ForegroundColor Cyan
+        ## Expand-Archive only accepts a .zip extension
+        $zipCopy = Join-Path $work "package.zip"
+        Copy-Item $XapkPath $zipCopy -Force
+        Expand-Archive -Path $zipCopy -DestinationPath $work -Force
+        Remove-Item $zipCopy -Force -ErrorAction SilentlyContinue
+
+        $apks = @(Get-ChildItem $work -Recurse -Filter *.apk | Select-Object -ExpandProperty FullName)
+        if (-not $apks) { throw "No .apk inside. Is this a valid package?" }
+        Write-Host ">>> Found $($apks.Count) APK(s):" -ForegroundColor Cyan
+        $apks | ForEach-Object { Write-Host "    $(Split-Path $_ -Leaf)" -ForegroundColor DarkGray }
+
+        Write-Host ">>> Installing..." -ForegroundColor Cyan
+        if ($apks.Count -eq 1) {
+            & $adb -s $serial install -r $apks[0]
+        } else {
+            & $adb -s $serial install-multiple -r @apks
+        }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host ">>> Install failed (exit $LASTEXITCODE)." -ForegroundColor Red
+            Write-Host ">>> Common cause: ABI mismatch. This AVD is x86_64; an arm64-v8a-only" -ForegroundColor Yellow
+            Write-Host "    split will not install." -ForegroundColor Yellow
+            return
+        }
+        Write-Host ">>> APKs installed." -ForegroundColor Green
+
+        ## OBB assets. The original script skipped these, so games would install
+        ## and then crash on first launch looking for missing data.
+        $obbs = @(Get-ChildItem $work -Recurse -Filter *.obb -ErrorAction SilentlyContinue)
+        if ($obbs) {
+            foreach ($obb in $obbs) {
+                ## OBB filenames look like main.<version>.<package.name>.obb
+                $parts = $obb.Name -split '\.'
+                if ($parts.Count -lt 4) {
+                    Write-Host ">>> Cannot parse package name from $($obb.Name); skipping." -ForegroundColor Yellow
+                    continue
+                }
+                $pkg = ($parts[2..($parts.Count - 2)]) -join '.'
+                $dest = "/sdcard/Android/obb/$pkg"
+                Write-Host ">>> Pushing $($obb.Name) -> $dest" -ForegroundColor Cyan
+                & $adb -s $serial shell mkdir -p $dest
+                & $adb -s $serial push $obb.FullName "$dest/$($obb.Name)"
+            }
+        }
+        Write-Host ">>> Success." -ForegroundColor Green
+    } finally {
+        Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+## ============================================================
+##  Launch / relaunch the AVD (cold boot)
+##
+##  Kills any running instance -- qemu-system-x86_64 holds the AVD's file
+##  locks, NOT the emulator.exe launcher, so both are stopped -- then re-pins to
+##  the integrated GPU and cold-boots fresh. This is the fix when the emulator
+##  hangs on a white boot screen. Plain cold boot, no data wipe; if a boot is
+##  truly stuck, add '-wipe-data' to the args below. Launch (iGPU pin + -gpu
+##  host + flags) mirrors StepAndroid's.
+## ============================================================
+$StepLaunchAvd = {
+    $ErrorActionPreference = 'Continue'   # adb/emulator stderr is benign; gate on results
+    $sdk = "$env:LOCALAPPDATA\Android\Sdk"
+    $emu = "$sdk\emulator\emulator.exe"
+    if (-not (Test-Path $emu)) { throw "emulator not found at $emu. Run step [4] first." }
+    $adb = "$sdk\platform-tools\adb.exe"
+    if (-not (Test-Path $adb)) { $adb = (Get-Command adb -ErrorAction SilentlyContinue).Source }
+    if (-not $adb) { throw "adb not found. Run step [4] or add adb to PATH." }
+
+    Write-Host ">>> Stopping any running AVD (qemu-system + launcher)..." -ForegroundColor Cyan
+    Get-Process qemu-system-* -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process emulator*     -ErrorAction SilentlyContinue | Stop-Process -Force
+    & $adb kill-server  2>$null
+    & $adb start-server 2>$null
+    Start-Sleep -Seconds 2
+
+    Set-EmulatorGpuPreference   # render on the iGPU, keep the dGPU for the model
+    Write-Host ">>> Cold-booting $AvdName..." -ForegroundColor Green
+    Start-Process -FilePath $emu `
+        -ArgumentList '-avd',$AvdName,'-gpu','host',
+                      '-no-snapshot','-no-snapshot-save','-no-snapshot-load',
+                      '-no-boot-anim','-no-metrics' `
+        -WindowStyle Hidden
+
+    ## Poll getprop, never 'adb wait-for-device' (blocks forever with no timeout).
+    Write-Host ">>> Waiting for Android to finish booting..." -ForegroundColor Cyan
+    $booted = ""; $deadline = (Get-Date).AddMinutes(8)
+    while ((Get-Date) -lt $deadline) {
+        $booted = (& $adb shell getprop sys.boot_completed 2>$null | Out-String).Trim()
+        if ($booted -eq "1") { break }
+        Start-Sleep -Seconds 5
+    }
+    if ($booted -ne "1") {
+        throw "AVD did not finish booting in 8 min. If it hangs on a white screen, relaunch with -wipe-data."
+    }
+    Write-Host ">>> AVD booted." -ForegroundColor Green
+    & $adb devices
+}
 
 $script:Items = @(
     @{ Key="prereqs";  Group="SETUP"; Color="Cyan"; Label="Install prerequisites (winget, dev mode, VCRedist)"
        Action=$StepPrereqs;  Enabled={ $true }; Why="" }
 
     @{ Key="hyperv";   Group="SETUP"; Color="Cyan"; Label="Enable Hyper-V + WHPX          (reboot after)"
-       Action={ throw $FullOnly }; Enabled={ $false }; Why=$FullOnly }
+       Action=$StepHyperV; Enabled={ -not $script:Env.HyperV }; Why="Already enabled." }
 
     @{ Key="verify";   Group="SETUP"; Color="Cyan"; Label="Verify Hyper-V / WHPX acceleration"
-       Action={ throw $FullOnly }; Enabled={ $false }; Why=$FullOnly }
+       Action=$StepVerifyHyperV; Enabled={ $script:Env.HyperV }; Why="Run step 2, then reboot." }
 
     @{ Key="android";  Group="SETUP"; Color="Cyan"; Label="Install Android Studio + Pixel_5 AVD (interactive)"
-       Action={ throw $FullOnly }; Enabled={ $false }; Why=$FullOnly }
+       Action=$StepAndroid; Enabled={ $script:Env.HyperV }
+       Why="Needs Hyper-V (step 2) and a reboot, or the AVD has no acceleration." }
 
-    @{ Key="ollama";   Group="SETUP"; Color="Cyan"; Label="Install Ollama, pull qwen3.5"
+    @{ Key="ollama";   Group="SETUP"; Color="Cyan"; Label="Install mobile-mcp + Ollama, pull qwen3.5"
        Action=$StepOllama;   Enabled={ $script:Env.Npm -and $script:Env.Ollama }
        Why="Needs node + ollama from step 1. Open a NEW terminal after installing." }
 
@@ -3035,23 +3621,24 @@ $script:Items = @(
 
     @{ Key="openclaw"; Group="SETUP"; Color="Cyan"; Label="Install + configure OpenClaw   (opens TUI)"
        Action=$StepOpenClaw
-       Enabled={ $script:Env.Npx -and $script:Env.Ollama -and $script:Env.Model -and $script:Env.Token }
-       Why="Needs npx, ollama, qwen3.5, and a saved token (step 6)." }
+       Enabled={ $script:Env.Adb -and $script:Env.Npx -and $script:Env.Ollama -and $script:Env.Model -and $script:Env.MobileMcp -and $script:Env.Token }
+       Why="Needs adb, npx, ollama, qwen3.5, mobile-mcp, and a saved token." }
 
     @{ Key="suite";    Group="USE"; Color="Green"; Label="Run the test suite (diagnostics)"
        Action=$StepSuite;    Enabled={ $script:Env.OpenClaw }
        Why="OpenClaw is not installed (step 7)." }
 
     @{ Key="agent";    Group="USE"; Color="Green"; Label="Run the three agent tests"
-       Action={ throw $FullOnly }; Enabled={ $false }; Why=$FullOnly }
+       Action=$StepTest; Enabled={ $script:Env.OpenClaw -and $script:Env.Cfg -and $script:Env.Device }
+       Why="Needs OpenClaw configured (step 7) and a running AVD." }
 
     @{ Key="xapk";     Group="USE"; Color="Green"; Label="Install an .xapk / .apk onto the AVD"
-       Action={ throw $FullOnly }; Enabled={ $false }; Why=$FullOnly }
+       Action=$StepXapk; Enabled={ $script:Env.Adb -and $script:Env.Device }
+       Why="No device attached. Start the AVD (step 4)." }
 
-    ## Placed AFTER xapk (index 10, shows as [-]) so it never shifts the [1]-[0]
-    ## numbering of the steps above. Full swaps in the real launcher by key.
     @{ Key="launchavd"; Group="USE"; Color="Green"; Label="Launch / relaunch the AVD (cold boot)"
-       Action={ throw $FullOnly }; Enabled={ $false }; Why=$FullOnly }
+       Action=$StepLaunchAvd; Enabled={ $script:Env.Avd }
+       Why="No AVD yet. Create it with step 4." }
 
     @{ Key="approve";  Group="USE"; Color="Green"; Label="Approve paired devices"
        Action=$StepApprove
@@ -3088,23 +3675,6 @@ $script:Items = @(
        Action=$StepUninstall; Enabled={ $script:Env.Installed }
        Why="Nothing is installed." }
 )
-
-## Full uses this to replace a placeholder in place, preserving position.
-function Set-MenuItem {
-    param(
-        [string]$Key,
-        [scriptblock]$Action,
-        [scriptblock]$Enabled,
-        $Why,
-        [string]$Label
-    )
-    $item = $script:Items | Where-Object { $_.Key -eq $Key }
-    if (-not $item) { throw "Set-MenuItem: no menu item with key '$Key'" }
-    if ($Action)  { $item.Action  = $Action }
-    if ($Enabled) { $item.Enabled = $Enabled }
-    if ($PSBoundParameters.ContainsKey('Why'))   { $item.Why   = $Why }
-    if ($Label)   { $item.Label = $Label }
-}
 
 function Show-Menu {
     param([int]$Selected)
@@ -3341,7 +3911,7 @@ function Start-FullTest {
         $skipN = @($rows | Where-Object Result -eq "SKIP").Count
 
         $sb = New-Object Text.StringBuilder
-        [void]$sb.AppendLine("# Full Test report -- $script:Edition edition")
+        [void]$sb.AppendLine("# Full Test report")
         [void]$sb.AppendLine("")
         [void]$sb.AppendLine("- Started: $started")
         [void]$sb.AppendLine("- Ended:   $(Get-Date)")
@@ -3380,9 +3950,8 @@ function Request-Elevation {
     if (Test-Admin) { return $true }
     if ($NoElevate) { return $false }
 
-    ## $PSCommandPath inside a function is the SCRIPT's path, but if Full
-    ## loaded us that is Lite -- relaunching it would drop the Android
-    ## features. Use whichever script was actually invoked.
+    ## Relaunch whichever script was actually invoked (recorded at the top),
+    ## forwarding its original arguments.
     $entry = $global:OC_EntryScript
     if (-not $entry) {
         Write-Host "Not elevated, and there is no file to relaunch." -ForegroundColor Yellow
@@ -3423,12 +3992,11 @@ function Start-Menu {
     [void](Request-Elevation)
 
     ## -RunAll bypasses the interactive menu entirely and drives every step
-    ## unattended. Same entry point in both editions, so Full's Start-Menu call
-    ## routes here too.
+    ## unattended.
     if ($RunAll) { Start-FullTest; return }
 
     ## -StartAvd: just launch/relaunch the AVD and exit. Runs the launchavd menu
-    ## item (Full's real launcher; Lite's placeholder throws FullOnly).
+    ## item without opening the menu.
     if ($StartAvd) {
         Update-EnvState
         $item = $script:Items | Where-Object Key -eq 'launchavd'
@@ -3469,9 +4037,9 @@ function Start-Menu {
 ## ============================================================
 ##  Auto-start, unless we were loaded as a library.
 ##
-##  The Full script sets $global:OC_NoAutoStart before dot-sourcing this
-##  file, appends its own menu items, then calls Start-Menu itself. That
-##  is the whole extension mechanism -- no code here is duplicated there.
+##  Set $global:OC_NoAutoStart before dot-sourcing this file to load its
+##  functions and menu without opening the menu (used by the headless docs
+##  regeneration).
 ## ============================================================
 if (-not $global:OC_NoAutoStart) {
     Start-Menu

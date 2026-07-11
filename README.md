@@ -6,7 +6,7 @@ controlled over Telegram.
 
 <https://github.com/alrokayan/OpenClaw_Ollama_12GB_VRAM>
 
-Generated from `OpenClaw_Ollama_12GB_VRAM_Lite.ps1` on 2026-07-11.
+Generated from `OpenClaw_Ollama_12GB_VRAM.ps1` on 2026-07-12.
 Do not edit by hand -- regenerate with the *Generate README.md, LICENSE, .gitignore* menu item.
 
 ## Disclaimer
@@ -47,9 +47,9 @@ The pipeline:
 ```
   Telegram  -->  OpenClaw gateway  -->  Ollama (qwen3.5, 64k ctx)
                        |
-                       +-->  MCP: scrcpy-mcp  -->  adb  -->  Pixel_5 AVD
+                       +-->  MCP: mobile-mcp  -->  adb  -->  Pixel_5 AVD
                        |
-                       +-->  skill: droidclaw (perception / reason / act)
+                       +-->  skill: mobile-skill (inspect / reason / act)
 ```
 
 The emulator renders in hardware (`-gpu host`) but is pinned to the **integrated**
@@ -58,89 +58,54 @@ megabyte of the discrete card's VRAM stays with the model. Software rendering
 (`swiftshader_indirect`) was the original plan but drew a blank/white framebuffer
 on the build host, so hardware GL on the iGPU is the reliable way to the same goal.
 
-## Two editions
+## Install
 
-**Lite** is the whole local AI assistant *without* Android: Ollama + qwen3.5, the
-OpenClaw gateway, your Telegram bot, web search, and the Control UI dashboard.
-Reach for it when you just want a private chat agent running on your own hardware.
+This is a single, self-contained script. It installs Ollama + qwen3.5, the
+OpenClaw gateway with your Telegram bot, web search, and the Control UI
+dashboard, plus an Android emulator (Android Studio + a Pixel_5 AVD) that the
+agent drives over mobile-mcp -- so the bot can see the screen and tap, type,
+and swipe on it.
 
-**Full** is Lite *plus* everything needed to give that agent a phone to drive: it
-enables Hyper-V/WHPX, installs Android Studio and a Pixel_5 AVD, bridges the
-emulator over scrcpy-mcp, and loads the DroidClaw skill -- so the bot can see the
-screen and tap, type, and swipe on it. Everything Lite does, Full does too; the
-Android rows below are the only difference.
-
-| | Lite | Full |
-| --- | --- | --- |
-| Ollama + qwen3.5 @ 64k | yes | yes |
-| OpenClaw gateway, loopback | yes | yes |
-| Telegram bot, allowlisted | yes | yes |
-| DuckDuckGo search | yes | yes |
-| Control UI dashboard | yes | yes |
-| Test suite, status, uninstall | yes | yes |
-| Hyper-V / WHPX | no | yes |
-| Android Studio + Pixel_5 AVD | no | yes |
-| scrcpy-mcp bridge | no | yes |
-| DroidClaw skill | no | yes |
-| .xapk / .obb installer | no | yes |
-| Approve paired devices | yes | yes |
-
-Full does not copy Lite. It sets `\True`, dot-sources the Lite
-script, flips three flags in `\System.Collections.Hashtable`, defines the four
-Android-only steps, rebuilds the menu, and calls `Start-Menu`. Shared steps read
-the flags rather than being duplicated, so there is exactly one implementation
-of *configure OpenClaw*, *run the test suite*, and *uninstall*.
-
-## One-liner install
-
-Lite:
+One-liner install:
 
 ```powershell
 \ = \
 ```
 
-Full (fetches Lite too):
+Or run straight from memory. It uses the script's **default parameters** (you
+cannot pass `-NumCtx`/`-TelegramId` through it) and the *Generate README*
+step is unavailable (no file on disk):
 
 ```powershell
-\ = \
-```
-
-Shortest -- runs straight from memory. It uses each script's **default
-parameters** (you cannot pass `-NumCtx`/`-TelegramId` through it) and the
-*Generate README* step is unavailable (no file on disk). Full still fetches Lite
-from the web on its own, and self-elevates by relaunching that saved copy:
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12GB_VRAM/main/OpenClaw_Ollama_12GB_VRAM_Lite.ps1)))   # Lite
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12GB_VRAM/main/OpenClaw_Ollama_12GB_VRAM_Full.ps1)))   # Full
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12GB_VRAM/main/OpenClaw_Ollama_12GB_VRAM.ps1)))
 ```
 
 `scriptblock::Create` is **not** `iex`: the `param()` block still binds (to its
 defaults), so this runs and still prompts to self-elevate -- you just cannot pass
 `-NumCtx`/`-TelegramId` through it. To override parameters or use the docs
-generator, use the file-based one-liners above (or clone the repo).
+generator, use the file-based one-liner above (or clone the repo).
 
-**Not** `irm ... | iex`. Both scripts declare `#Requires` and a `param()` block,
+**Not** `irm ... | iex`. The script declares `#Requires` and a `param()` block,
 and neither survives being piped through `Invoke-Expression`: parameters cannot
 bind, and the version check is skipped. Saving to a file first also means
-`\C:\Users\moham\OneDrive\Desktop\OpenClaw_Ollama_12GB_VRAM\OpenClaw_Ollama_12GB_VRAM_Lite.ps1` is set, so self-elevation and the docs generator both work.
+`\C:\Users\moham\OneDrive\Desktop\OpenClaw_Ollama_12GB_VRAM\OpenClaw_Ollama_12GB_VRAM.ps1` is set, so self-elevation and the docs generator both work.
 
-> **Read this before running either.** These download code and execute it
+> **Read this before running.** These download code and execute it
 > immediately, with no review, no signature, and no checksum. Whoever controls
 > that URL controls your machine, and the script will ask for Administrator.
 > The convenience is real; so is the risk. The file lands in `\C:\Users\moham\AppData\Local\Temp` -- open
 > it and read it before you let it run.
 
-Both scripts offer to relaunch themselves elevated, forwarding whatever
-arguments you gave them.
+The script offers to relaunch itself elevated, forwarding whatever
+arguments you gave it.
 
 ## Parameters
 
 Override on the command line rather than editing the file:
 
 ```powershell
-.\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -NumCtx 32768 -TelegramId 123456789
-.\OpenClaw_Ollama_12GB_VRAM_Lite.ps1 -NoDashboard -NoElevate
+.\OpenClaw_Ollama_12GB_VRAM.ps1 -NumCtx 32768 -TelegramId 123456789
+.\OpenClaw_Ollama_12GB_VRAM.ps1 -NoDashboard -NoElevate
 ```
 
 | Parameter | Default | Notes |
@@ -149,15 +114,15 @@ Override on the command line rather than editing the file:
 | `-Model` | `qwen3.5:latest` | |
 | `-NumCtx` | `65536` | drop to 32768 if `ollama ps` stops saying 100% GPU |
 | `-GatewayPort` | `18789` | loopback only |
-| `-AvdName` | `Pixel_5` | Full only |
-| `-SysImage` | (Android 37.1 ps16k x86_64) | Full only |
+| `-AvdName` | `Pixel_5` | |
+| `-SysImage` | (Android 37.1 ps16k x86_64) | |
 | `-NoDashboard` | off | omit the controlUi block from openclaw.json |
 | `-LicenseHolder` | `Mohammed Alrokayan` | written into LICENSE |
 | `-NoElevate` | off | skip the Administrator relaunch prompt |
 | `-Unattended` | off | never block on a human: prompts take their default, no 'press any key', the onboarding TUI is launched detached and killed once it writes config. Set OC_UNATTENDED=1 in the environment to force it |
 | `-AutoXapkPath` | (none) | package the .xapk step installs when unattended, skipping the file picker |
 | `-RunAll` | off | drive every menu step end-to-end, non-interactively, writing `full_test_report.md`. Implies `-Unattended` and ends in the **destructive uninstall** -- VM/throwaway only |
-| `-StartAvd` | off | launch/relaunch the AVD (cold boot) and exit, without the menu. Full only |
+| `-StartAvd` | off | launch/relaunch the AVD (cold boot) and exit, without the menu |
 
 `-NumCtx` is range-validated (4096-262144) and `-GatewayPort` (1024-65535), so a
 typo fails at parse time rather than halfway through configuring the gateway.
@@ -170,7 +135,7 @@ Two ways to start (or restart) the emulator:
    or headless:
 
 ```powershell
-.\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -StartAvd
+.\OpenClaw_Ollama_12GB_VRAM.ps1 -StartAvd
 ```
 
    It stops any running instance (`qemu-system-x86_64` holds the locks, not the
@@ -205,7 +170,7 @@ or to verify it:
 3. Click each > **Options** > **Power saving** (this is the integrated GPU) > **Save**.
    (Choose *High performance* instead if you have no iGPU and want the discrete card.)
 4. In Android Studio's Device Manager, set the AVD's **Graphics = Hardware - GLES 2.0**.
-5. Relaunch: `.\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -StartAvd`.
+5. Relaunch: `.\OpenClaw_Ollama_12GB_VRAM.ps1 -StartAvd`.
 
 Equivalent to the manual steps, done in one line (what the script runs), for each exe:
 
@@ -235,9 +200,8 @@ Get-ChildItem .\*.ps1 | Unblock-File
 Copy-Item env.example env
 notepad env
 
-# Run as Administrator. Pick one:
-powershell -ExecutionPolicy Bypass -File .\OpenClaw_Ollama_12GB_VRAM_Lite.ps1
-powershell -ExecutionPolicy Bypass -File .\OpenClaw_Ollama_12GB_VRAM_Full.ps1
+# Run as Administrator:
+powershell -ExecutionPolicy Bypass -File .\OpenClaw_Ollama_12GB_VRAM.ps1
 ```
 
 Then work down the menu. Steps 1-7 run in order on a fresh machine, with a
@@ -295,7 +259,7 @@ would do instead of doing it.** `qwen2.5:7b` produced replies like:
 
 ```
   Here is the command we will run:
-      scrcpy --screenshot screenshot.png
+      adb screenshot --out screenshot.png
   Do you want to proceed?
 ```
 
@@ -457,7 +421,7 @@ about **what the bot reads**. From OpenClaw's security docs:
 > instructions. The content itself is a threat surface, not just the sender.
 
 This build combines a small local model (the weakest tier for injection
-resistance), real device-control tools (adb, scrcpy, shell), and web search.
+resistance), real device-control tools (adb, shell), and web search.
 That is the exact three-way combination the docs warn about.
 
 If you do not need the agent to search the web, set the search provider to
@@ -467,55 +431,49 @@ must stay on loopback.
 ## Design notes
 
 ```
-This is the base script. It installs and configures:
-
-  - Ollama serving qwen3.5:latest, context capped to 65536
-  - The OpenClaw gateway, bound to loopback
-  - A Telegram bot, DM-allowlisted to one user id
-  - DuckDuckGo web search (key-free)
-  - The Control UI dashboard
-
-It is ALSO a library. OpenClaw_Ollama_12GB_VRAM_Full.ps1 sets
-$global:OC_NoAutoStart, dot-sources this file, flips the flags in
-$global:OC_Features, appends its own menu items, and calls Start-Menu.
-Nothing in this file is duplicated there.
-
-  $OC_Features.Android     Android Studio, SDK, Pixel_5 AVD, Hyper-V
-  $OC_Features.Mcp         scrcpy-mcp as an MCP server
-  $OC_Features.DroidClaw   the DroidClaw device-control skill
-
-WHY THE CONTEXT IS CAPPED
-
-qwen3.5 advertises a 262144-token window. That KV cache does not fit a
-12 GB card. Three numbers are set equal so they cannot diverge:
-contextTokens (the effective budget OpenClaw compacts against),
-contextWindow (the advertised window), and params.num_ctx (what Ollama
-actually allocates). Let any exceed num_ctx and OpenClaw believes it has
-room Ollama never gave it, and the tail of every prompt is silently
-truncated.
-
-"openclaw doctor --fix" also raises num_ctx back to the advertised
-window. The cap is re-applied afterwards, then verified with
-"ollama ps", which must still report 100% GPU.
-
-CONFIGURATION SAFETY
-
-Config is written with "openclaw config patch", never by editing the
-JSON. Every patch is dry-run first. OpenClaw validates the full
-post-change config before committing; an invalid payload leaves the
-active config untouched and lands as openclaw.json.rejected.*
-
-This matters: an invalid openclaw.json makes "doctor --fix" silently
-restore the last-known-good copy and discard every change, saving
-yours as .clobbered.* with no loud error. Hence "config validate" runs
-before doctor, and the script aborts rather than let doctor loose on a
-bad config.
-
-The models array is a protected path. "config patch" replaces arrays
-wholesale, which would strip fields Ollama's onboarding set --
-including compat.supportsTools. Losing that is not cosmetic: the model
-is then never offered tools, and will narrate shell commands as prose
-instead of calling anything. So the model entry is merged by id with
+This single, self-contained script installs and configures:
+
+  - Ollama serving qwen3.5:latest, context capped to 65536
+  - The OpenClaw gateway, bound to loopback
+  - A Telegram bot, DM-allowlisted to one user id
+  - DuckDuckGo web search (key-free)
+  - The Control UI dashboard
+  - An Android emulator (Android Studio, SDK, Pixel_5 AVD, Hyper-V)
+  - mobile-mcp as an MCP server, plus a device-control skill so the
+    agent can drive the emulator
+
+WHY THE CONTEXT IS CAPPED
+
+qwen3.5 advertises a 262144-token window. That KV cache does not fit a
+12 GB card. Three numbers are set equal so they cannot diverge:
+contextTokens (the effective budget OpenClaw compacts against),
+contextWindow (the advertised window), and params.num_ctx (what Ollama
+actually allocates). Let any exceed num_ctx and OpenClaw believes it has
+room Ollama never gave it, and the tail of every prompt is silently
+truncated.
+
+"openclaw doctor --fix" also raises num_ctx back to the advertised
+window. The cap is re-applied afterwards, then verified with
+"ollama ps", which must still report 100% GPU.
+
+CONFIGURATION SAFETY
+
+Config is written with "openclaw config patch", never by editing the
+JSON. Every patch is dry-run first. OpenClaw validates the full
+post-change config before committing; an invalid payload leaves the
+active config untouched and lands as openclaw.json.rejected.*
+
+This matters: an invalid openclaw.json makes "doctor --fix" silently
+restore the last-known-good copy and discard every change, saving
+yours as .clobbered.* with no loud error. Hence "config validate" runs
+before doctor, and the script aborts rather than let doctor loose on a
+bad config.
+
+The models array is a protected path. "config patch" replaces arrays
+wholesale, which would strip fields Ollama's onboarding set --
+including compat.supportsTools. Losing that is not cosmetic: the model
+is then never offered tools, and will narrate shell commands as prose
+instead of calling anything. So the model entry is merged by id with
 "config set --strict-json --merge".
 ```
 
@@ -541,32 +499,30 @@ Edit these at the top of the script before the first run.
 Navigate with the arrow keys; each row is a plain `-` bullet. Items grey out
 when their preconditions are unmet **or** the step is already done, with the
 reason shown under the cursor (e.g. *Already enabled.* for Hyper-V once it is on).
-The list is identical in both editions -- Full swaps its Android
-steps in by key, so a step's position never shifts (the `#` column below is that
-stable position).
+The `#` column below is each step's stable menu position.
 
 ![The interactive menu](images/menu.png)
 
-| # | Step | Group | Edition | Unavailable when |
-| --- | --- | --- | --- | --- |
-| 1 | Install prerequisites (winget, dev mode, VCRedist) | SETUP | both | always available |
-| 2 | Enable Hyper-V + WHPX          (reboot after) | SETUP | Full | Full edition only. This step needs the Android emulator. |
-| 3 | Verify Hyper-V / WHPX acceleration | SETUP | Full | Full edition only. This step needs the Android emulator. |
-| 4 | Install Android Studio + Pixel_5 AVD (interactive) | SETUP | Full | Full edition only. This step needs the Android emulator. |
-| 5 | Install Ollama, pull qwen3.5 | SETUP | both | Needs node + ollama from step 1. Open a NEW terminal after installing. |
-| 6 | Set Telegram bot token | SETUP | both | always available |
-| 7 | Install + configure OpenClaw   (opens TUI) | SETUP | both | Needs npx, ollama, qwen3.5, and a saved token (step 6). |
-| 8 | Run the test suite (diagnostics) | USE | both | OpenClaw is not installed (step 7). |
-| 9 | Run the three agent tests | USE | Full | Full edition only. This step needs the Android emulator. |
-| 0 | Install an .xapk / .apk onto the AVD | USE | Full | Full edition only. This step needs the Android emulator. |
-| - | Launch / relaunch the AVD (cold boot) | USE | Full | Full edition only. This step needs the Android emulator. |
-| - | Approve paired devices | USE | both | No paired.json yet. Pair a device from the Control UI or Telegram. |
-| - | Status check | USE | both | always available |
-| - | Open the dashboard (Control UI) | USE | both | OpenClaw is not installed (step 7). |
-| - | Auto-start on boot: Ollama + gateway (on/off) | USE | both | Install OpenClaw (step 7) or Ollama (step 5) first -- there is nothing to auto-start yet. |
-| - | Install skills / MCPs / plugins (sub-menu) | USE | both | OpenClaw is not installed (step 7). |
-| - | Generate README.md, LICENSE, .gitignore | USE | both | Only works when run as a file, not piped from the web. |
-| - | Uninstall everything | DANGER | both | Nothing is installed. |
+| # | Step | Group | Unavailable when |
+| --- | --- | --- | --- |
+| 1 | Install prerequisites (winget, dev mode, VCRedist) | SETUP | always available |
+| 2 | Enable Hyper-V + WHPX          (reboot after) | SETUP | Already enabled. |
+| 3 | Verify Hyper-V / WHPX acceleration | SETUP | Run step 2, then reboot. |
+| 4 | Install Android Studio + Pixel_5 AVD (interactive) | SETUP | Needs Hyper-V (step 2) and a reboot, or the AVD has no acceleration. |
+| 5 | Install mobile-mcp + Ollama, pull qwen3.5 | SETUP | Needs node + ollama from step 1. Open a NEW terminal after installing. |
+| 6 | Set Telegram bot token | SETUP | always available |
+| 7 | Install + configure OpenClaw   (opens TUI) | SETUP | Needs adb, npx, ollama, qwen3.5, mobile-mcp, and a saved token. |
+| 8 | Run the test suite (diagnostics) | USE | OpenClaw is not installed (step 7). |
+| 9 | Run the three agent tests | USE | Needs OpenClaw configured (step 7) and a running AVD. |
+| 0 | Install an .xapk / .apk onto the AVD | USE | No device attached. Start the AVD (step 4). |
+| - | Launch / relaunch the AVD (cold boot) | USE | No AVD yet. Create it with step 4. |
+| - | Approve paired devices | USE | No paired.json yet. Pair a device from the Control UI or Telegram. |
+| - | Status check | USE | always available |
+| - | Open the dashboard (Control UI) | USE | OpenClaw is not installed (step 7). |
+| - | Auto-start on boot: Ollama + gateway (on/off) | USE | Install OpenClaw (step 7) or Ollama (step 5) first -- there is nothing to auto-start yet. |
+| - | Install skills / MCPs / plugins (sub-menu) | USE | OpenClaw is not installed (step 7). |
+| - | Generate README.md, LICENSE, .gitignore | USE | Only works when run as a file, not piped from the web. |
+| - | Uninstall everything | DANGER | Nothing is installed. |
 
 *Status check* output (host, GPUs, virtualization, toolchain, model, device,
 OpenClaw configuration, readiness):
@@ -583,8 +539,7 @@ Telegram window.
 ![The agent tests: model result + adb probe per test](images/tests.png)
 
 - adb on PATH
-- scrcpy on PATH
-- scrcpy-mcp installed globally
+- mobile-mcp installed globally
 - ollama daemon answering
 - $Model pulled
 - AVD attached
@@ -598,45 +553,45 @@ Telegram window.
 - model responds (direct)
 - model responds (via gateway)
 - model loaded on GPU, not CPU
-- scrcpy MCP server started
-- droidclaw skill loaded
+- mobile MCP server started
+- mobile-skill skill loaded
 
 ## Notes
 
 ```
-DISCLAIMER
-          Run at your own risk. No warranty of any kind. This script
-          installs system-level components, writes to the registry, and
-          creates a Scheduled Task. Its uninstall path irreversibly
-          deletes ~/.openclaw and optionally ~/.ollama (your models).
-          Read it before running it.
-
-          The Telegram bot token is stored in plaintext in .\env and
-          ~/.openclaw/.env. Anyone who can read those controls the bot.
-
-Keys      Up/Down move, Enter run, R refresh state, Home/End jump,
-          1-9 and 0 select directly, Esc quit.
-
-Requires  Windows PowerShell 5.1 or later, run as Administrator.
-
-Encoding  Every file this script writes is UTF-8 without a BOM, via
-          [IO.File]::WriteAllText / WriteAllLines. Set-Content
-          -Encoding utf8 emits a BOM on PS 5.1, and ">" redirection
-          emits UTF-16LE. Both corrupt files that other tools parse.
-
-ASCII     The script contains no non-ASCII characters. Box-drawing
-          glyphs and em dashes become mojibake in consoles that are not
-          on a UTF-8 code page, and a mangled character inside a string
-          can break parsing outright.
-
-Debugging If the agent narrates shell commands instead of calling
+DISCLAIMER
+          Run at your own risk. No warranty of any kind. This script
+          installs system-level components, writes to the registry, and
+          creates a Scheduled Task. Its uninstall path irreversibly
+          deletes ~/.openclaw and optionally ~/.ollama (your models).
+          Read it before running it.
+
+          The Telegram bot token is stored in plaintext in .\env and
+          ~/.openclaw/.env. Anyone who can read those controls the bot.
+
+Keys      Up/Down move, Enter run, R refresh state, Home/End jump,
+          1-9 and 0 select directly, Esc quit.
+
+Requires  Windows PowerShell 5.1 or later, run as Administrator.
+
+Encoding  Every file this script writes is UTF-8 without a BOM, via
+          [IO.File]::WriteAllText / WriteAllLines. Set-Content
+          -Encoding utf8 emits a BOM on PS 5.1, and ">" redirection
+          emits UTF-16LE. Both corrupt files that other tools parse.
+
+ASCII     The script contains no non-ASCII characters. Box-drawing
+          glyphs and em dashes become mojibake in consoles that are not
+          on a UTF-8 code page, and a mangled character inside a string
+          can break parsing outright.
+
+Debugging If the agent narrates shell commands instead of calling
           tools, run the test suite before blaming the model.
 ```
 
 ## Full help
 
 ```powershell
-Get-Help .\OpenClaw_Ollama_12GB_VRAM_Lite.ps1 -Full
+Get-Help .\OpenClaw_Ollama_12GB_VRAM.ps1 -Full
 ```
 
 This is native comment-based help. The script deliberately does not use platyPS:
@@ -667,8 +622,7 @@ capture almost everything needed to diagnose a failure.
 
 | File | Committed? | Notes |
 | --- | --- | --- |
-| `OpenClaw_Ollama_12GB_VRAM_Lite.ps1` | yes | base script, and a library |
-| `OpenClaw_Ollama_12GB_VRAM_Full.ps1` | yes | loads Lite, adds Android |
+| `OpenClaw_Ollama_12GB_VRAM.ps1` | yes | the single, self-contained script |
 | `README.md` | yes | generated |
 | `LICENSE` | yes | generated, MIT |
 | `.gitignore` | yes | generated |
