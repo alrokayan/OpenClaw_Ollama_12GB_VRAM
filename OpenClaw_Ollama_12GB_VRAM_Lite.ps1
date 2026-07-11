@@ -1153,14 +1153,73 @@ $StepTest = {
 
     Write-Host "These only mean anything if the test suite showed real scrcpy" -ForegroundColor Yellow
     Write-Host "tools and supportsTools: true." -ForegroundColor Yellow
-    Write-Host ""
 
-    openclaw agent --session-key test --message 'Capture a screenshot of the current AVD display using "scrcpy-mcp" or "android_automation_agent:read_screen" to verify the visual stream is rendering correctly'
-    openclaw agent --session-key test --message 'Execute a Home button key event via ADB to ensure the emulator layout resets to a known state'
-    ## Uses the built-in Messages app (com.google.android.apps.messaging), which
-    ## ships on the stock system image -- Telegram is not preinstalled, so an
-    ## agent test that assumes it can never complete the send.
-    openclaw agent --session-key test --message 'Open the built-in Messages app (com.google.android.apps.messaging), start a new conversation, type Hi in the message field, then send'
+    $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+    if (-not (Test-Path $adb)) { $adb = (Get-Command adb -ErrorAction SilentlyContinue).Source }
+
+    ## Run one agent prompt with --json, print the model's result (parsed from the
+    ## JSON when a known text field is present, else the raw output), then run a
+    ## $Probe that shows the ACTUAL device state via adb -- so each test shows the
+    ## model's answer AND what really happened on the screen, not just an exit code.
+    function Invoke-AgentTest {
+        param([string]$Title, [string]$Message, [scriptblock]$Probe)
+        Write-Host "`n===== $Title =====" -ForegroundColor Magenta
+        Write-Host "  prompt: $Message" -ForegroundColor DarkGray
+        $raw = (openclaw agent --session-key test --message $Message --json 2>&1 | Out-String).Trim()
+        $shown = $false
+        try {
+            $o = $raw | ConvertFrom-Json
+            foreach ($f in 'text','answer','result','message','output','content','reply') {
+                $v = $o.$f
+                if (($v -is [string]) -and $v.Trim()) { Write-Host "  model: $($v.Trim())" -ForegroundColor Gray; $shown = $true; break }
+            }
+            ## surface tool calls when the JSON exposes them
+            foreach ($tc in @($o.toolCalls) + @($o.tools)) {
+                if ($tc -and $tc.name) { Write-Host "  tool:  $($tc.name)" -ForegroundColor Cyan }
+            }
+        } catch { }
+        if (-not $shown) {
+            $trim = if ($raw.Length -gt 600) { $raw.Substring(0,600) + " ..." } else { $raw }
+            Write-Host "  result (raw): $trim" -ForegroundColor DarkGray
+        }
+        Write-Host "  -- adb probe (what actually happened) --" -ForegroundColor DarkCyan
+        if ($Probe -and $adb) { & $Probe }
+    }
+
+    ## 1. Screenshot -- capture the framebuffer via adb (device-side then pull,
+    ##    which is binary-safe; PowerShell '>' would corrupt the PNG).
+    Invoke-AgentTest "1. Screenshot" `
+        'Capture a screenshot of the current device display using the scrcpy-mcp screenshot tool to verify the visual stream is rendering' `
+        {
+            $shot = Join-Path $LogDir "agent-screenshot.png"
+            & $adb shell screencap -p /sdcard/agent-shot.png 2>$null
+            & $adb pull /sdcard/agent-shot.png $shot 2>$null | Out-Null
+            $sz = if (Test-Path $shot) { (Get-Item $shot).Length } else { 0 }
+            if ($sz -gt 1000) { Write-Host "  screenshot: $shot ($([int]($sz/1KB)) KB) -- non-blank, display renders" -ForegroundColor Green }
+            else { Write-Host "  screenshot near-empty ($sz B) -- display not rendering (check the iGPU pin)" -ForegroundColor Red }
+        }
+
+    ## 2. Home key
+    Invoke-AgentTest "2. Home key" `
+        'Press the device Home button (via the scrcpy key_event tool, or adb shell input keyevent HOME) to reset to a known state' `
+        {
+            $fw = & $adb shell dumpsys window 2>$null | Select-String 'mCurrentFocus' | Select-Object -First 1
+            $focus = if ($fw) { $fw.Line.Trim() } else { "n/a" }
+            Write-Host "  focused window: $focus" -ForegroundColor Gray
+            if ($focus -match 'launcher') { Write-Host "  -> home screen (launcher focused)" -ForegroundColor Green }
+        }
+
+    ## 3. Built-in Messages app (com.google.android.apps.messaging ships on the
+    ##    stock image; Telegram is not preinstalled, so a Telegram test can never
+    ##    complete the send).
+    Invoke-AgentTest "3. Messages" `
+        'Open the built-in Messages app (com.google.android.apps.messaging), start a new conversation, type Hi in the message field, then send' `
+        {
+            $fw = & $adb shell dumpsys window 2>$null | Select-String 'mCurrentFocus' | Select-Object -First 1
+            $focus = if ($fw) { $fw.Line.Trim() } else { "n/a" }
+            Write-Host "  focused window: $focus" -ForegroundColor Gray
+            if ($focus -match 'messaging') { Write-Host "  -> Messages app in the foreground" -ForegroundColor Green }
+        }
 }
 
 ## ============================================================
