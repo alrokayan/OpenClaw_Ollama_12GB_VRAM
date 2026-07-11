@@ -302,12 +302,14 @@ Losing `compat.supportsTools` is not cosmetic: the model is then never offered
 tools, and falls back to narrating shell commands -- looking exactly like a
 model-capability problem.
 
-`models.providers.<id>.models` is a *protected path*. Use
-`openclaw config set ... --strict-json --merge`, which merges by `id`.
-
-A hand-rolled `jq` deep-merge was built to solve this before discovering that
-OpenClaw's own CLI already does it, with schema validation. That work was
-thrown away. **Read the CLI reference before writing tooling.**
+`models.providers.<id>.models` is a *protected path*, and `config set
+... --merge` is **not** the answer either: on OpenClaw `2026.6.11` it left a
+**duplicate** `qwen3.5:latest` entry in the array and then silently failed to change
+`num_ctx`/`contextTokens`, so the model kept running at the native 262144 with
+its KV cache spilled to CPU (`ollama ps` never reached `100% GPU`). The script
+instead **reads the current entry, de-duplicates by id, sets the three context
+fields, and full-replaces** the array -- safe because it carries the whole entry
+(including `compat.supportsTools`) forward. Verify the fix with `ollama ps`.
 
 ### Context window
 

@@ -504,6 +504,38 @@ function Patch {
     if ($LASTEXITCODE -ne 0) { throw "Patch failed: $Label" }
 }
 
+## ---- Clamp the model's context to $Cap, robustly ----------------
+## Sets contextWindow, contextTokens, and params.num_ctx on the ollama model
+## entry, ALL equal to $Cap.
+##
+## Why not 'config set models.providers.ollama.models [...] --merge': on the
+## build (OpenClaw 2026.6.11) that DID NOT merge by id -- it left a DUPLICATE
+## "$Model" entry in the array, after which merge-by-id could no longer target a
+## single row, so num_ctx/contextTokens silently never changed and the model ran
+## at the native 262144 spilled to CPU (ollama ps showed CPU/GPU split, not
+## 100% GPU). So: read the current entry (preserving compat.supportsTools, cost,
+## reasoning that onboarding set), de-duplicate to a single entry by id, set the
+## three fields, and FULL-REPLACE the array (no --merge). Full replace is safe
+## here precisely because we carry the whole entry forward.
+function Set-ModelContextCap {
+    param([int]$Cap)
+    $models = @(openclaw config get models.providers.ollama.models --json 2>$null | Out-String | ConvertFrom-Json)
+    $m = @($models | Where-Object { $_.id -eq $Model })[0]   # first match -> de-dupe
+    if (-not $m) { throw "No '$Model' entry in models.providers.ollama.models to clamp." }
+
+    $m.contextWindow = $Cap
+    if ($m.PSObject.Properties.Name -contains 'contextTokens') { $m.contextTokens = $Cap }
+    else { $m | Add-Member -NotePropertyName contextTokens -NotePropertyValue $Cap -Force }
+    if (-not $m.params) { $m | Add-Member -NotePropertyName params -NotePropertyValue ([PSCustomObject]@{}) -Force }
+    if ($m.params.PSObject.Properties.Name -contains 'num_ctx') { $m.params.num_ctx = $Cap }
+    else { $m.params | Add-Member -NotePropertyName num_ctx -NotePropertyValue $Cap -Force }
+
+    ## -Depth high: the entry nests compat/cost/params/input. -Compress -> one line.
+    $json = ConvertTo-Json @($m) -Depth 20 -Compress
+    openclaw config set models.providers.ollama.models $json --strict-json
+    if ($LASTEXITCODE -ne 0) { throw "Failed to set clamped '$Model' entry." }
+}
+
 function Invoke-Step {
     param([string]$Name, [scriptblock]$Body)
     Clear-Host
@@ -859,23 +891,20 @@ Use this skill when the user requests tasks on an Android device: opening apps, 
 }
 
     ## ---- Context window ----
-    ## 'config patch' REPLACES arrays, and models.providers.<id>.models is a
-    ## protected path. 'config set --merge' merges by id instead, preserving
-    ## compat.supportsTools, reasoning, cost, and sibling models like gemma4.
-    ## Three numbers must agree, or OpenClaw thinks it has room Ollama never
-    ## allocated and the prompt tail is silently truncated:
+    ## Three numbers must agree at $NumCtx, or OpenClaw believes it has room
+    ## Ollama never allocated and the prompt tail is silently truncated:
     ##   contextTokens -- the effective runtime budget OpenClaw compacts against
     ##                    (schema field; per src/agents/context-resolution.ts it
     ##                    takes precedence over contextWindow: contextTokens ??
     ##                    contextWindow)
-    ##   contextWindow -- the model's advertised window (kept equal here so the
-    ##                    two never diverge -- the zero-risk stance; letting it
-    ##                    float to native is a separate, VM-verified change)
+    ##   contextWindow -- the model's advertised window (kept equal, zero-risk)
     ##   params.num_ctx -- what Ollama actually allocates in VRAM
-    ## All set to $NumCtx (what fits a 12 GB card).
+    ## Set-ModelContextCap sets all three by read-modify-dedupe-full-replace, NOT
+    ## 'config set ... --merge': that merge left a DUPLICATE model entry and then
+    ## silently failed to change num_ctx, so the model ran at 262144 on CPU. The
+    ## helper also preserves compat.supportsTools (losing it stops tool calls).
     Write-Host "`n>>> Capping context to $NumCtx" -ForegroundColor Cyan
-    $entry = "[{`"id`":`"$Model`",`"contextWindow`":$NumCtx,`"contextTokens`":$NumCtx,`"maxTokens`":8192,`"params`":{`"num_ctx`":$NumCtx,`"keep_alive`":`"15m`"}}]"
-    openclaw config set models.providers.ollama.models $entry --strict-json --merge
+    Set-ModelContextCap $NumCtx
     openclaw config set models.providers.ollama.contextWindow $NumCtx --strict-json
 
     ## ---- Validate, repair, restart ----
@@ -886,10 +915,11 @@ Use this skill when the user requests tasks on an Android device: opening apps, 
 
     openclaw doctor --fix
 
-    ## doctor raises num_ctx back to the model's full 262144. Clamp it again,
-    ## and re-assert contextTokens alongside it so all three stay equal.
-    Write-Host "`n>>> Re-clamping num_ctx + contextTokens (doctor raises them)" -ForegroundColor Cyan
-    openclaw config set models.providers.ollama.models "[{`"id`":`"$Model`",`"contextTokens`":$NumCtx,`"params`":{`"num_ctx`":$NumCtx}}]" --strict-json --merge
+    ## doctor raises the model's context back to the native 262144. Clamp again
+    ## -- authoritative: Set-ModelContextCap also de-duplicates whatever doctor
+    ## left, so the final array is one entry with all three fields at $NumCtx.
+    Write-Host "`n>>> Re-clamping context to $NumCtx (doctor raises it)" -ForegroundColor Cyan
+    Set-ModelContextCap $NumCtx
 
     openclaw gateway restart
     foreach ($i in 1..30) {
@@ -1650,12 +1680,14 @@ $StepReadme = {
     Add-Line "tools, and falls back to narrating shell commands -- looking exactly like a"
     Add-Line "model-capability problem."
     Add-Line ""
-    Add-Line "``models.providers.<id>.models`` is a *protected path*. Use"
-    Add-Line "``openclaw config set ... --strict-json --merge``, which merges by ``id``."
-    Add-Line ""
-    Add-Line "A hand-rolled ``jq`` deep-merge was built to solve this before discovering that"
-    Add-Line "OpenClaw's own CLI already does it, with schema validation. That work was"
-    Add-Line "thrown away. **Read the CLI reference before writing tooling.**"
+    Add-Line "``models.providers.<id>.models`` is a *protected path*, and ``config set"
+    Add-Line "... --merge`` is **not** the answer either: on OpenClaw ``2026.6.11`` it left a"
+    Add-Line "**duplicate** ``$Model`` entry in the array and then silently failed to change"
+    Add-Line "``num_ctx``/``contextTokens``, so the model kept running at the native 262144 with"
+    Add-Line "its KV cache spilled to CPU (``ollama ps`` never reached ``100% GPU``). The script"
+    Add-Line "instead **reads the current entry, de-duplicates by id, sets the three context"
+    Add-Line "fields, and full-replaces** the array -- safe because it carries the whole entry"
+    Add-Line "(including ``compat.supportsTools``) forward. Verify the fix with ``ollama ps``."
     Add-Line ""
 
     Add-Line "### Context window"
