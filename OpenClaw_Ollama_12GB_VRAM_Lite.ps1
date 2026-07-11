@@ -826,10 +826,23 @@ $StepOpenClaw = {
     imageModel: { primary: "ollama/$Model" } } } }
 "@
 
+    ## The channel config alone is NOT enough: the telegram PLUGIN must be enabled
+    ## in plugins.entries or the channel never loads (this was the "bot never
+    ## replies" bug). session.dmScope "per-channel-peer" keeps each DM peer's
+    ## session isolated. channels.telegram.enabled makes the channel live;
+    ## dmPolicy allowlist + allowFrom gates DMs; groupAllowFrom gates who the bot
+    ## obeys in groups; groups["*"].requireMention keeps it silent in groups unless
+    ## @-mentioned. commands.* scopes owner-only commands. botToken pulls the token
+    ## from ~/.openclaw/.env (never inlined here).
     Patch "telegram" @"
-{ channels: { telegram: {
+{ plugins: { entries: { telegram: { enabled: true } } },
+  session: { dmScope: "per-channel-peer" },
+  channels: { telegram: {
+    enabled: true,
     botToken: "`${TELEGRAM_BOT_TOKEN}",
     dmPolicy: "allowlist", allowFrom: ["$TelegramId"],
+    groupAllowFrom: ["$TelegramId"],
+    groups: { "*": { requireMention: true } },
     streaming: { mode: "progress" } } },
   commands: {
     allowFrom: { telegram: ["$TelegramId"] },
