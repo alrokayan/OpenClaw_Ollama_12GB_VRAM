@@ -1056,7 +1056,9 @@ $StepSuite = {
     } "Do NOT run 'doctor --fix' on an invalid config; it discards your changes."
 
     Test-Case "telegram token in gateway env" {
-        $dotEnv = Join-Path (Split-Path (openclaw config file).Trim()) ".env"
+        ## Use the known path, NOT 'openclaw config file' -- that command prints a
+        ## startup spinner that interleaves with this line and misaligns [ PASS ].
+        $dotEnv = "$Home\.openclaw\.env"
         (Test-Path $dotEnv) -and ((Get-Content $dotEnv | Out-String) -match 'TELEGRAM_BOT_TOKEN=\S')
     } "The gateway is a Scheduled Task; it cannot see this shell's environment."
 
@@ -1192,8 +1194,22 @@ $StepStatus = {
     if ($gpu) {
         ## AdapterRAM is a signed 32-bit field and wraps above 4 GB, so it
         ## under-reports a 12 GB card. Report the name, not the bogus size.
-        Row "GPU" $gpu.Name $null
+        Row "GPU (discrete)" $gpu.Name $null
     }
+
+    ## Integrated GPU + which card the emulator is pinned to. The emulator should
+    ## render on the iGPU (Set-EmulatorGpuPreference) so the discrete card's VRAM
+    ## stays entirely for the model.
+    $igpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'UHD|Iris|Radeon.*Graphics|Vega|Integrated' } | Select-Object -First 1
+    Row "GPU (integrated)" $(if ($igpu) { $igpu.Name } else { "none detected" }) $null
+    $emuExe = "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe"
+    $pref = $null
+    try { $pref = (Get-ItemProperty 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' -ErrorAction Stop).$emuExe } catch { }
+    $emuGpu = if ($pref -match 'GpuPreference=1') { "integrated (pinned)" }
+              elseif ($pref -match 'GpuPreference=2') { "discrete (pinned)" }
+              else { "OS default (Autoselect)" }
+    Row "emulator GPU" $emuGpu ($pref -match 'GpuPreference=1')
 
     ## ---- virtualization ----
     Write-Host ""
@@ -2510,22 +2526,39 @@ function Show-Menu {
             $lastGroup = $item.Group
         }
 
-        ## 10th shows as [0]; anything beyond is arrow-only
-        $n = if ($i -lt 9) { "$($i + 1)" } elseif ($i -eq 9) { "0" } else { "-" }
+        ## The bracket shows a per-step DONE mark, not a number -- navigation is
+        ## by arrow keys, and "which steps are already in place" is what you
+        ## actually want to see. 'x' = this step's outcome exists (derived from
+        ## live $Env); blank = not done or not applicable. (Number keys 1-9/0
+        ## still select by position; they just are not displayed.)
+        $e = $script:Env
+        $done = switch ($item.Key) {
+            'prereqs'   { [bool]($e.Npm -and $e.Npx) }
+            'hyperv'    { [bool]$e.HyperV }
+            'verify'    { [bool]$e.HyperV }
+            'android'   { [bool]$e.Avd }
+            'ollama'    { [bool]($e.Model -and (-not $Features.Mcp -or $e.ScrcpyMcp)) }
+            'token'     { [bool]$e.Token }
+            'openclaw'  { [bool]($e.OpenClaw -and $e.Cfg) }
+            'launchavd' { [bool]$e.Device }
+            'approve'   { [bool](Test-Path "$Home\.openclaw\devices\paired.json") }
+            default     { $false }
+        }
+        $mark = if ($done) { 'x' } else { ' ' }
 
         if ($i -eq $Selected) {
             if (-not $on) {
-                Write-Host "  > [$n] $($item.Label)".PadRight(64) -ForegroundColor DarkGray -BackgroundColor Black
+                Write-Host "  > [$mark] $($item.Label)".PadRight(64) -ForegroundColor DarkGray -BackgroundColor Black
             } else {
                 $bg = if ($item.Group -eq "DANGER") { "DarkRed" } else { "DarkCyan" }
-                Write-Host "  > [$n] $($item.Label)".PadRight(64) -ForegroundColor White -BackgroundColor $bg
+                Write-Host "  > [$mark] $($item.Label)".PadRight(64) -ForegroundColor White -BackgroundColor $bg
             }
         } elseif (-not $on) {
-            ## greyed out: dim everything, no accent colour on the number
-            Write-Host "    [$n] $($item.Label)" -ForegroundColor DarkGray
+            ## greyed out: dim everything
+            Write-Host "    [$mark] $($item.Label)" -ForegroundColor DarkGray
         } else {
             Write-Host "    [" -ForegroundColor DarkGray -NoNewline
-            Write-Host $n -ForegroundColor $item.Color -NoNewline
+            Write-Host $mark -ForegroundColor $(if ($done) { 'Green' } else { $item.Color }) -NoNewline
             Write-Host "] " -ForegroundColor DarkGray -NoNewline
             Write-Host $item.Label -ForegroundColor Gray
         }
