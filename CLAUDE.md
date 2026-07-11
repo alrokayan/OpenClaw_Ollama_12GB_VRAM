@@ -290,12 +290,16 @@ Check "Presence -OwnerName param on script + fn" ((((Get-Command $Lite).Paramete
 # Agent tests deliver the reply to Telegram and report SENT (not PASS).
 $stDef = $StepTest.ToString()
 Check "Agent tests deliver to Telegram + report SENT" (($stDef -match "reply-channel',\s*'telegram'") -and ($stDef -match '--deliver') -and ($stDef -match '\[SENT\]'))
+# DroidClaw ships a deterministic no-base64 screenshot->Telegram sender.
+$ocDef = $StepOpenClaw.ToString()
+Check "DroidClaw bundles send-screen.ps1 (server-side, no base64)" (($ocDef -match 'send-screen\.ps1') -and ($ocDef -match 'droidclaw-screen\.png') -and ($ocDef -match 'message send --channel telegram'))
+Check "Full skills limit raised to 10 (droidclaw visible in prompt)" ($ocDef -match 'maxSkillsInPrompt: 10')
 
 Write-Host "`n== soft-test: $pass passed, $fail failed ==" -ForegroundColor (@('Green','Red')[[int]($fail -gt 0)])
 if ($fail -gt 0) { exit 1 }
 ```
 
-Expected on a clean tree: **77 passed, 0 failed**. A new menu item, a renamed
+Expected on a clean tree: **79 passed, 0 failed**. A new menu item, a renamed
 key, a broken `Enabled`/`Why`, a non-ASCII byte, an accidental BOM, generator
 drift, or a broken unattended path each turns a line red.
 

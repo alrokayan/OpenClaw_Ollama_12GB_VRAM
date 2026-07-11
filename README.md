@@ -60,6 +60,16 @@ on the build host, so hardware GL on the iGPU is the reliable way to the same go
 
 ## Two editions
 
+**Lite** is the whole local AI assistant *without* Android: Ollama + qwen3.5, the
+OpenClaw gateway, your Telegram bot, web search, and the Control UI dashboard.
+Reach for it when you just want a private chat agent running on your own hardware.
+
+**Full** is Lite *plus* everything needed to give that agent a phone to drive: it
+enables Hyper-V/WHPX, installs Android Studio and a Pixel_5 AVD, bridges the
+emulator over scrcpy-mcp, and loads the DroidClaw skill -- so the bot can see the
+screen and tap, type, and swipe on it. Everything Lite does, Full does too; the
+Android rows below are the only difference.
+
 | | Lite | Full |
 | --- | --- | --- |
 | Ollama + qwen3.5 @ 64k | yes | yes |
@@ -95,10 +105,10 @@ Full (fetches Lite too):
 \ = \
 ```
 
-Shortest (runs straight from memory, no temp file). Start an **Administrator**
-PowerShell first -- this form does not self-elevate, uses each script's default
-parameters, and the *Generate README* step is unavailable (there is no file on
-disk). Full still fetches Lite from the web on its own:
+Shortest -- runs straight from memory. It uses each script's **default
+parameters** (you cannot pass `-NumCtx`/`-TelegramId` through it) and the
+*Generate README* step is unavailable (no file on disk). Full still fetches Lite
+from the web on its own, and self-elevates by relaunching that saved copy:
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12GB_VRAM/main/OpenClaw_Ollama_12GB_VRAM_Lite.ps1)))   # Lite
@@ -106,9 +116,9 @@ disk). Full still fetches Lite from the web on its own:
 ```
 
 `scriptblock::Create` is **not** `iex`: the `param()` block still binds (to its
-defaults), so this runs -- you just cannot pass `-NumCtx`/`-TelegramId` through
-it. To override parameters, or to get self-elevation and the docs generator, use
-the file-based one-liners above (or clone the repo).
+defaults), so this runs and still prompts to self-elevate -- you just cannot pass
+`-NumCtx`/`-TelegramId` through it. To override parameters or use the docs
+generator, use the file-based one-liners above (or clone the repo).
 
 **Not** `irm ... | iex`. Both scripts declare `#Requires` and a `param()` block,
 and neither survives being piped through `Invoke-Expression`: parameters cannot

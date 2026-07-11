@@ -955,10 +955,13 @@ if ($Features.DroidClaw) {
 
     ## ---- DroidClaw skill ----
     New-Item -ItemType Directory -Force "$Home\.openclaw\skills\droidclaw" | Out-Null
+    $skillDir       = "$Home\.openclaw\skills\droidclaw"
+    $sendScreenPath = Join-Path $skillDir "send-screen.ps1"
+
     $skill = @'
 ---
 name: droidclaw
-description: Controls a connected Android device via the scrcpy-mcp bridge using a perception-reasoning-action loop.
+description: Controls a connected Android device via the scrcpy-mcp bridge using a perception-reasoning-action loop, and sends screenshots to the user's Telegram.
 requires:
   bins:
     - adb
@@ -974,24 +977,64 @@ Use this skill when the user requests tasks on an Android device: opening apps, 
 2. **Reasoning**: Locate UI elements. Calculate coordinates for taps and text fields.
 3. **Action**: Issue explicit input commands through the tool chain.
 
+## Sending a screenshot to the user
+When the user asks you to SEND or SHOW them a screenshot of the phone, do NOT use
+the scrcpy screenshot tool for that: it returns the image as inline base64, which
+floods your context window and makes the turn fail. Instead run the bundled
+script exactly ONCE, through your exec/command tool:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File "__SEND_SCREEN__"
+
+It captures the screen and delivers it to the user's Telegram as a photo,
+entirely server-side -- no base64 ever reaches you. Then just tell the user the
+screenshot was sent. Never read, decode, base64, or attach the image yourself,
+and never call the screenshot tool more than once for a single request.
+
 ## Core Directives
 * Always read the screen before pressing anything.
 * If a tap does not change the layout after three attempts, stop and tell the user.
 * Clear existing text before typing into a field.
-'@
+'@.Replace('__SEND_SCREEN__', $sendScreenPath)
+
     ## A BOM before the opening --- breaks YAML frontmatter and the skill never
     ## loads. Set-Content -Encoding utf8 writes a BOM on PS 5.1; this does not.
-    [IO.File]::WriteAllText("$Home\.openclaw\skills\droidclaw\SKILL.md", $skill,
+    [IO.File]::WriteAllText("$skillDir\SKILL.md", $skill,
         (New-Object Text.UTF8Encoding($false)))
+
+    ## Bundled deterministic screenshot -> Telegram sender. The base64 NEVER
+    ## enters the model context (that overflows the 64k window and the turn dies);
+    ## capture + send happen entirely server-side. exec-out is binary-safe (adb
+    ## shell would CRLF-mangle the PNG). Media MUST live under ~/.openclaw/media --
+    ## OpenClaw's outbound sandbox rejects --media from any other directory.
+    $sendScreen = @'
+$ErrorActionPreference = 'Continue'
+$target = '__TELEGRAM_ID__'
+$med = Join-Path $HOME '.openclaw\media'
+New-Item -ItemType Directory -Force $med | Out-Null
+$png = Join-Path $med 'droidclaw-screen.png'
+cmd /c "adb exec-out screencap -p > `"$png`""
+$len = (Get-Item $png -ErrorAction SilentlyContinue).Length
+if ($len -gt 1000) {
+    openclaw message send --channel telegram --target $target --media $png | Out-Null
+    Write-Output "screenshot sent ($([int]($len/1KB)) KB)"
+} else {
+    Write-Output "capture failed ($len bytes) -- is the emulator running and rendering?"
+}
+'@.Replace('__TELEGRAM_ID__', $TelegramId)
+    [IO.File]::WriteAllText($sendScreenPath, $sendScreen, (New-Object Text.UTF8Encoding($false)))
 
     ## limits lives at skills.limits, NOT skills.load.limits. Getting this wrong
     ## makes the config invalid, and 'doctor --fix' then silently restores
     ## last-known-good and discards every patch above.
+    ## maxSkillsInPrompt 10 (was 5): with an Android device the agent needs the
+    ## droidclaw skill to actually land in the prompt, so it uses the bundled
+    ## send-screen.ps1 instead of the context-flooding scrcpy screenshot tool.
+    ## maxSkillsPromptChars 4000 still caps the total, so the prompt stays small.
     Patch "skills" @'
 { skills: {
     allowBundled: [],
     load: { extraDirs: ["~/.openclaw/skills"] },
-    limits: { maxSkillsInPrompt: 5, maxSkillsPromptChars: 4000 } } }
+    limits: { maxSkillsInPrompt: 10, maxSkillsPromptChars: 4000 } } }
 '@
 
 } else {
@@ -1628,6 +1671,16 @@ $StepReadme = {
     ## ---------------- editions ----------------
     Add-Line "## Two editions"
     Add-Line ""
+    Add-Line "**Lite** is the whole local AI assistant *without* Android: Ollama + qwen3.5, the"
+    Add-Line "OpenClaw gateway, your Telegram bot, web search, and the Control UI dashboard."
+    Add-Line "Reach for it when you just want a private chat agent running on your own hardware."
+    Add-Line ""
+    Add-Line "**Full** is Lite *plus* everything needed to give that agent a phone to drive: it"
+    Add-Line "enables Hyper-V/WHPX, installs Android Studio and a Pixel_5 AVD, bridges the"
+    Add-Line "emulator over scrcpy-mcp, and loads the DroidClaw skill -- so the bot can see the"
+    Add-Line "screen and tap, type, and swipe on it. Everything Lite does, Full does too; the"
+    Add-Line "Android rows below are the only difference."
+    Add-Line ""
     Add-Line "| | Lite | Full |"
     Add-Line "| --- | --- | --- |"
     Add-Line "| Ollama + qwen3.5 @ 64k | yes | yes |"
@@ -1665,10 +1718,10 @@ $StepReadme = {
     Add-Line "\$f = \"\$env:TEMP\OpenClaw_Full.ps1\"; irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM_Full.ps1 -OutFile \$f; Unblock-File \$f; & \$f"
     Add-Line '```'
     Add-Line ""
-    Add-Line "Shortest (runs straight from memory, no temp file). Start an **Administrator**"
-    Add-Line "PowerShell first -- this form does not self-elevate, uses each script's default"
-    Add-Line "parameters, and the *Generate README* step is unavailable (there is no file on"
-    Add-Line "disk). Full still fetches Lite from the web on its own:"
+    Add-Line "Shortest -- runs straight from memory. It uses each script's **default"
+    Add-Line "parameters** (you cannot pass ``-NumCtx``/``-TelegramId`` through it) and the"
+    Add-Line "*Generate README* step is unavailable (no file on disk). Full still fetches Lite"
+    Add-Line "from the web on its own, and self-elevates by relaunching that saved copy:"
     Add-Line ""
     Add-Line '```powershell'
     Add-Line "& ([scriptblock]::Create((irm $RepoRaw/OpenClaw_Ollama_12GB_VRAM_Lite.ps1)))   # Lite"
@@ -1676,9 +1729,9 @@ $StepReadme = {
     Add-Line '```'
     Add-Line ""
     Add-Line "``scriptblock::Create`` is **not** ``iex``: the ``param()`` block still binds (to its"
-    Add-Line "defaults), so this runs -- you just cannot pass ``-NumCtx``/``-TelegramId`` through"
-    Add-Line "it. To override parameters, or to get self-elevation and the docs generator, use"
-    Add-Line "the file-based one-liners above (or clone the repo)."
+    Add-Line "defaults), so this runs and still prompts to self-elevate -- you just cannot pass"
+    Add-Line "``-NumCtx``/``-TelegramId`` through it. To override parameters or use the docs"
+    Add-Line "generator, use the file-based one-liners above (or clone the repo)."
     Add-Line ""
     Add-Line "**Not** ``irm ... | iex``. Both scripts declare ``#Requires`` and a ``param()`` block,"
     Add-Line "and neither survives being piped through ``Invoke-Expression``: parameters cannot"
