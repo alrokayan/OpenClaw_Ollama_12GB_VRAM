@@ -2531,6 +2531,108 @@ $StepApprove = {
 }
 
 ## ============================================================
+##  Presence pings  (Telegram "back online" / "be right back")
+##
+##  Two notifications, sent STRAIGHT through the Telegram Bot API (not via the
+##  gateway) so they work even while the gateway is down. The bot token is read
+##  at runtime from ~/.openclaw/.env (never baked into the generated scripts or
+##  logs); the chat id is injected from -TelegramId at registration.
+##
+##    "OpenClaw Presence"        logon task, persistent watcher. TCP-polls the
+##                               gateway port; on a down->up transition sends
+##                               "Hey Doc, I'm back online". Covers OS boot and
+##                               gateway restarts.
+##    "OpenClaw Shutdown Notify" fires on System event 1074 (shutdown/restart
+##                               initiated) and sends "Hey Doc, I'll be right
+##                               back shortly ..". BEST-EFFORT: 1074 fires early
+##                               in shutdown, but the OS may still cut the
+##                               network before the POST lands.
+## ============================================================
+function Register-PresenceNotify {
+    param([string]$ChatId)
+    $dir = "$Home\.openclaw"
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+
+    ## Watcher: down->up => "back online". Single-quoted here-string == literal;
+    ## __CHATID__ is injected, the token is read from .env at runtime.
+    $watcher = @'
+$ErrorActionPreference = 'Continue'
+$chatId  = '__CHATID__'
+$msg     = 'Hey Doc, I''m back online'
+$envFile = Join-Path $HOME '.openclaw\.env'
+$port = 18789
+try { $pp = (openclaw config get gateway.port) 2>$null; if ("$pp" -match '\d+') { $port = [int]$Matches[0] } } catch {}
+function Test-Up { try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$port); $c.Close(); $true } catch { $false } }
+function Send-Ping($text) {
+    if (-not (Test-Path $envFile)) { return }
+    $tok = ((Get-Content $envFile | Where-Object { $_ -match '^TELEGRAM_BOT_TOKEN=' } | Select-Object -First 1) -replace '^TELEGRAM_BOT_TOKEN=','').Trim()
+    if (-not $tok) { return }
+    $uri = "https://api.telegram.org/bot$tok/sendMessage"
+    for ($i = 0; $i -lt 5; $i++) {
+        try { Invoke-RestMethod -Method Post -Uri $uri -Body @{ chat_id = $chatId; text = $text } | Out-Null; break }
+        catch { Start-Sleep -Seconds 5 }
+    }
+}
+$was = $false
+while ($true) {
+    $now = Test-Up
+    if ($now -and -not $was) { Start-Sleep -Seconds 6; Send-Ping $msg }
+    $was = $now
+    Start-Sleep -Seconds 20
+}
+'@ -replace '__CHATID__', $ChatId
+    $watcherPs = Join-Path $dir 'presence-watch.ps1'
+    [IO.File]::WriteAllText($watcherPs, $watcher, (New-Object Text.UTF8Encoding($false)))
+
+    ## Shutdown: event 1074 => "be right back" (one shot, best-effort).
+    $shut = @'
+$ErrorActionPreference = 'Continue'
+$chatId  = '__CHATID__'
+$msg     = 'Hey Doc, I''ll be right back shortly ..'
+$envFile = Join-Path $HOME '.openclaw\.env'
+if (Test-Path $envFile) {
+    $tok = ((Get-Content $envFile | Where-Object { $_ -match '^TELEGRAM_BOT_TOKEN=' } | Select-Object -First 1) -replace '^TELEGRAM_BOT_TOKEN=','').Trim()
+    if ($tok) { try { Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$tok/sendMessage" -Body @{ chat_id = $chatId; text = $msg } | Out-Null } catch {} }
+}
+'@ -replace '__CHATID__', $ChatId
+    $shutPs = Join-Path $dir 'presence-shutdown.ps1'
+    [IO.File]::WriteAllText($shutPs, $shut, (New-Object Text.UTF8Encoding($false)))
+
+    ## Hidden launcher for the persistent watcher (no console flash at logon).
+    $vbs = Join-Path $dir 'presence-watch.vbs'
+    $vbsBody = 'CreateObject("WScript.Shell").Run "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File ""' + $watcherPs + '""", 0, False'
+    [IO.File]::WriteAllText($vbs, $vbsBody, (New-Object Text.UTF8Encoding($false)))
+
+    $princ = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+
+    ## Watcher task -- at logon.
+    $wAction  = New-ScheduledTaskAction    -Execute 'wscript.exe' -Argument ('"{0}"' -f $vbs)
+    $wTrigger = New-ScheduledTaskTrigger    -AtLogOn -User $env:USERNAME
+    $wSet     = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName 'OpenClaw Presence' -Action $wAction -Trigger $wTrigger -Principal $princ -Settings $wSet -Force | Out-Null
+
+    ## Shutdown task -- on System event 1074. New-ScheduledTaskTrigger has no
+    ## -AtEvent, so build an MSFT_TaskEventTrigger via CIM with an XPath query.
+    $sAction  = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $shutPs)
+    $evtClass = Get-CimClass -Namespace root/Microsoft/Windows/TaskScheduler -ClassName MSFT_TaskEventTrigger
+    $sTrigger = New-CimInstance -CimClass $evtClass -ClientOnly
+    $sTrigger.Enabled      = $true
+    $sTrigger.Subscription = '<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[Provider[@Name=''User32''] and (EventID=1074)]]</Select></Query></QueryList>'
+    $sSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName 'OpenClaw Shutdown Notify' -Action $sAction -Trigger $sTrigger -Principal $princ -Settings $sSet -Force | Out-Null
+}
+
+function Unregister-PresenceNotify {
+    foreach ($t in 'OpenClaw Presence', 'OpenClaw Shutdown Notify') {
+        if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
+            Unregister-ScheduledTask -TaskName $t -Confirm:$false
+        }
+    }
+    Remove-Item "$Home\.openclaw\presence-watch.ps1", "$Home\.openclaw\presence-watch.vbs", `
+                "$Home\.openclaw\presence-shutdown.ps1" -ErrorAction SilentlyContinue
+}
+
+## ============================================================
 ##  Auto-start on boot  (toggle)
 ##
 ##  Two OS-level Scheduled Tasks bring the local stack up when Windows starts:
@@ -2617,10 +2719,16 @@ $StepAutoStart = {
             Write-Host "  [ollama] auto-start ENABLED (logon trigger, hidden via $vbs)." -ForegroundColor Green
         }
 
+        ## ---- presence pings: "back online" (boot/restart) + "be right back" ----
+        Register-PresenceNotify -ChatId $TelegramId
+        Write-Host "  [presence] 'Hey Doc, I'm back online' ping ENABLED (on boot + gateway restart)." -ForegroundColor Green
+        Write-Host "  [presence] 'Hey Doc, I'll be right back shortly ..' ping ENABLED (on shutdown; best-effort)." -ForegroundColor Green
+
         Write-Host ""
-        Write-Host "Both tasks fire at LOGON. A headless remote reboot brings the stack up" -ForegroundColor DarkGray
-        Write-Host "only after a user signs in; for fully-unattended boot you would also need" -ForegroundColor DarkGray
-        Write-Host "Windows auto-login (a credential-at-rest trade-off, not set by this script)." -ForegroundColor DarkGray
+        Write-Host "Tasks fire at LOGON (gateway/ollama) and on shutdown (the be-right-back" -ForegroundColor DarkGray
+        Write-Host "ping). A headless remote reboot brings the stack up only after a user" -ForegroundColor DarkGray
+        Write-Host "signs in; for fully-unattended boot you would also need Windows auto-login" -ForegroundColor DarkGray
+        Write-Host "(a credential-at-rest trade-off, not set by this script)." -ForegroundColor DarkGray
     }
     else {
         ## Gateway: keep the task (OpenClaw owns it) but disable the trigger.
@@ -2637,6 +2745,9 @@ $StepAutoStart = {
         } else {
             Write-Host "  [ollama] no auto-start task to remove." -ForegroundColor DarkGray
         }
+        ## Presence pings: remove both tasks + the generated scripts.
+        Unregister-PresenceNotify
+        Write-Host "  [presence] 'back online' + 'be right back' pings REMOVED." -ForegroundColor Yellow
     }
 }
 

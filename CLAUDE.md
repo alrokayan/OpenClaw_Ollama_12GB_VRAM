@@ -262,12 +262,18 @@ Check "Ensure-Python3 defined" ([bool](Get-Command Ensure-Python3 -EA SilentlyCo
 Check "StepPrereqs provisions python3" ($StepPrereqs.ToString() -match 'Ensure-Python3')
 $epDef = (Get-Command Ensure-Python3).Definition
 Check "Ensure-Python3 creates real python3.exe (copy)" (($epDef -match 'python3\.exe') -and ($epDef -match 'Copy-Item'))
+# Presence pings: back-online watcher + be-right-back shutdown notify, via Bot API.
+Check "Register-PresenceNotify defined"   ([bool](Get-Command Register-PresenceNotify -EA SilentlyContinue))
+Check "Unregister-PresenceNotify defined" ([bool](Get-Command Unregister-PresenceNotify -EA SilentlyContinue))
+Check "StepAutoStart wires presence pings" (($StepAutoStart.ToString() -match 'Register-PresenceNotify') -and ($StepAutoStart.ToString() -match 'Unregister-PresenceNotify'))
+$rpDef = (Get-Command Register-PresenceNotify).Definition
+Check "Presence msgs 'back online' + 'be right back' via Bot API" (($rpDef -match 'back online') -and ($rpDef -match 'be right back') -and ($rpDef -match 'api\.telegram\.org') -and ($rpDef -match '1074'))
 
 Write-Host "`n== soft-test: $pass passed, $fail failed ==" -ForegroundColor (@('Green','Red')[[int]($fail -gt 0)])
 if ($fail -gt 0) { exit 1 }
 ```
 
-Expected on a clean tree: **70 passed, 0 failed**. A new menu item, a renamed
+Expected on a clean tree: **74 passed, 0 failed**. A new menu item, a renamed
 key, a broken `Enabled`/`Why`, a non-ASCII byte, an accidental BOM, generator
 drift, or a broken unattended path each turns a line red.
 
