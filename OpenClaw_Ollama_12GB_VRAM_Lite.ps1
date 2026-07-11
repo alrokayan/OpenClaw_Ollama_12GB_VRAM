@@ -2558,6 +2558,38 @@ $StepAutoStart = {
 }
 
 ## ============================================================
+##  Install the Context7 docs skill
+##
+##  @thesethrose/context7 is a ClawHub skill that lets the agent pull current,
+##  version-accurate library/framework/API docs on demand (the same Context7
+##  service this repo's own tooling uses). One command: 'openclaw skills install
+##  <@owner/slug>'. It fetches from ClawHub, so it prints progress to stderr and
+##  shells out -- benign under Continue; we gate success on $LASTEXITCODE.
+##
+##  Idempotent-ish: a re-run against an already-installed skill exits non-zero;
+##  we report that as "already installed" rather than treating it as a failure.
+## ============================================================
+$StepSkills = {
+    if (-not (Get-Command openclaw -ErrorAction SilentlyContinue)) {
+        throw "openclaw not installed. Run step [7] first."
+    }
+    $ref = '@thesethrose/context7'
+
+    $ErrorActionPreference = 'Continue'
+    Write-Host "Installing skill $ref from ClawHub..." -ForegroundColor Cyan
+    openclaw skills install $ref
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+
+    if ($code -eq 0) {
+        Write-Host "Installed. Verify with:  openclaw skills list" -ForegroundColor Green
+    } else {
+        Write-Host "skills install exited $code -- it may already be installed." -ForegroundColor Yellow
+        Write-Host "Re-run with --force to overwrite, or check:  openclaw skills list" -ForegroundColor DarkGray
+    }
+}
+
+## ============================================================
 ##  The menu, in run order.
 ##
 ##  ONE canonical list, shared by both editions, so a number always means
@@ -2635,6 +2667,11 @@ $script:Items = @(
        Action=$StepAutoStart
        Enabled={ $script:Env.OpenClaw -or $script:Env.Ollama }
        Why="Install OpenClaw (step 7) or Ollama (step 5) first -- there is nothing to auto-start yet." }
+
+    @{ Key="skills";   Group="USE"; Color="Green"; Label="Install the Context7 docs skill (@thesethrose/context7)"
+       Action=$StepSkills
+       Enabled={ $script:Env.OpenClaw }
+       Why="OpenClaw is not installed (step 7)." }
 
     @{ Key="docs";     Group="USE"; Color="Green"; Label="Generate README.md, LICENSE, .gitignore"
        Action=$StepReadme;   Enabled={ [bool]$PSCommandPath }

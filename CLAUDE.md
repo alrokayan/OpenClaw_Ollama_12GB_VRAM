@@ -146,7 +146,7 @@ function Check($name, $cond, $detail='') {
 }
 
 $ExpectedKeys = @('prereqs','hyperv','verify','android','ollama','token','openclaw',
-                  'suite','agent','xapk','launchavd','approve','status','dashboard','autostart','docs','uninstall')
+                  'suite','agent','xapk','launchavd','approve','status','dashboard','autostart','skills','docs','uninstall')
 $FullOnlyKeys = @('hyperv','verify','android','agent','xapk','launchavd')
 
 # A synthetic "everything present" env, to prove Enabled predicates flip on.
@@ -177,7 +177,7 @@ foreach ($g in 'README.md','LICENSE','.gitignore','env.example') {
 Write-Host "`n== Phase 2: LITE menu (headless) ==" -ForegroundColor Cyan
 $global:OC_NoAutoStart = $true
 . $Lite
-Check "Lite has 17 items" ($script:Items.Count -eq 17) "got $($script:Items.Count)"
+Check "Lite has 18 items" ($script:Items.Count -eq 18) "got $($script:Items.Count)"
 $keys = $script:Items | ForEach-Object { $_.Key }
 Check "Lite keys/order match" (@(Compare-Object $keys $ExpectedKeys -SyncWindow 0).Count -eq 0)
 foreach ($it in $script:Items) {
@@ -211,7 +211,7 @@ $tmp = Join-Path $Repo '.__full_headless_test.ps1'   # in repo so $PSScriptRoot 
 try {
     $global:OC_EntryScript = $null; $global:OC_Features = $null
     . $tmp
-    Check "Full has 17 items" ($script:Items.Count -eq 17)
+    Check "Full has 18 items" ($script:Items.Count -eq 18)
     $get = { param($k) $script:Items | Where-Object Key -eq $k }
     foreach ($k in $FullOnlyKeys) {
         Check "Full '$k' Action rewired (not placeholder)" ((& $get $k).Action.ToString() -notmatch 'throw \$FullOnly')
@@ -258,7 +258,7 @@ Write-Host "`n== soft-test: $pass passed, $fail failed ==" -ForegroundColor (@('
 if ($fail -gt 0) { exit 1 }
 ```
 
-Expected on a clean tree: **64 passed, 0 failed**. A new menu item, a renamed
+Expected on a clean tree: **65 passed, 0 failed**. A new menu item, a renamed
 key, a broken `Enabled`/`Why`, a non-ASCII byte, an accidental BOM, generator
 drift, or a broken unattended path each turns a line red.
 
