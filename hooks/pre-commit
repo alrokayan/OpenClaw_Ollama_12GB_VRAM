@@ -1,21 +1,23 @@
 #!/bin/sh
-# Pre-commit: run the soft-test before every commit so a broken menu, a non-ASCII
-# byte, or stale generated docs (README/LICENSE/.gitignore/env.example) can never
-# be committed. The soft-test's idempotency check compares the regenerated docs to
-# what is STAGED (git diff, worktree vs index), so committing a correctly
-# regenerated README passes.
+# Pre-commit: extract the soft-test from CLAUDE.md (its one canonical copy, the
+# fenced ```powershell block whose first line is "# soft-test.ps1") and run it,
+# so a broken menu, a non-ASCII byte, or stale generated docs can never be
+# committed. The soft-test's idempotency check compares regenerated docs to what
+# is STAGED (git diff, worktree vs index), so committing a correctly regenerated
+# README passes.
 #
 # Activate once per clone:   git config core.hooksPath hooks
 #
-# This protects your clone only, and can be skipped with `git commit --no-verify`.
-# The GitHub Action (.github/workflows/generated-files.yml) enforces the same on
-# push and CANNOT be skipped.
+# Protects your clone only, and is skippable with `git commit --no-verify`. The
+# GitHub Action (.github/workflows/generated-files.yml) runs the same block on
+# push and CANNOT be skipped. \x60 is a backtick -- used so this line has no
+# literal backticks for the shell to mangle.
 
-echo "pre-commit: running soft-test..."
-powershell -NoProfile -ExecutionPolicy Bypass -File ./soft-test.ps1
+echo "pre-commit: extracting + running the soft-test from CLAUDE.md..."
+powershell -NoProfile -ExecutionPolicy Bypass -Command '$md = Get-Content CLAUDE.md -Raw; $m = [regex]::Match($md, "(?s)[\x60]{3}powershell\r?\n(# soft-test\.ps1.*?)\r?\n[\x60]{3}"); if (-not $m.Success) { Write-Error "soft-test block not found in CLAUDE.md"; exit 2 }; $t = Join-Path $env:TEMP "oc-soft-test.ps1"; [IO.File]::WriteAllText($t, $m.Groups[1].Value, (New-Object Text.UTF8Encoding($false))); & $t; exit $LASTEXITCODE'
 if [ $? -ne 0 ]; then
     echo "" >&2
-    echo "pre-commit: soft-test FAILED -- fix it (regenerate the docs and stage them)" >&2
-    echo "before committing. Bypass with 'git commit --no-verify' only if you know why." >&2
+    echo "pre-commit: soft-test FAILED -- fix it (regenerate + stage the docs) before" >&2
+    echo "committing. Bypass with 'git commit --no-verify' only if you know why." >&2
     exit 1
 fi

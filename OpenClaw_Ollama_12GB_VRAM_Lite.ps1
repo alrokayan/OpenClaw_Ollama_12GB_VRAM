@@ -2685,23 +2685,30 @@ $brb     = '__BRB__'
 $envFile = Join-Path $HOME '.openclaw\.env'
 $port = 18789
 try { $pp = (openclaw config get gateway.port) 2>$null; if ("$pp" -match '\d+') { $port = [int]$Matches[0] } } catch {}
-function Test-Up { try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$port); $c.Close(); $true } catch { $false } }
+## Track the LISTENER's process id, not just up/down. A fast `gateway restart`
+## can close+reopen the port between 2s polls (we never observe "down"), but the
+## node pid changes -- so we still fire "back online". down->up / up->down cover
+## the boot and stop cases. Send-Ping retries (boot network may not be ready).
+function Get-GwPid { try { (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess } catch { $null } }
 function Send-Ping($text) {
     if (-not (Test-Path $envFile)) { return }
     $tok = ((Get-Content $envFile | Where-Object { $_ -match '^TELEGRAM_BOT_TOKEN=' } | Select-Object -First 1) -replace '^TELEGRAM_BOT_TOKEN=','').Trim()
     if (-not $tok) { return }
     $uri = "https://api.telegram.org/bot$tok/sendMessage"
-    for ($i = 0; $i -lt 3; $i++) {
-        try { Invoke-RestMethod -Method Post -Uri $uri -Body @{ chat_id = $chatId; text = $text } | Out-Null; break }
-        catch { Start-Sleep -Seconds 3 }
+    for ($i = 0; $i -lt 6; $i++) {
+        try { Invoke-RestMethod -Method Post -Uri $uri -Body @{ chat_id = $chatId; text = $text } | Out-Null; return }
+        catch { Start-Sleep -Seconds 5 }
     }
 }
-$was = $false
+$lastPid = $null
+$lastUp  = $false
 while ($true) {
-    $now = Test-Up
-    if     ($now -and -not $was)   { Start-Sleep -Seconds 2; Send-Ping $online }
-    elseif ((-not $now) -and $was) { Send-Ping $brb }
-    $was = $now
+    $curPid = Get-GwPid
+    $up = [bool]$curPid
+    if     ($up -and -not $lastUp)                      { Start-Sleep -Seconds 2; Send-Ping $online }
+    elseif ((-not $up) -and $lastUp)                    { Send-Ping $brb }
+    elseif ($up -and $lastUp -and $curPid -ne $lastPid) { Send-Ping $online }
+    $lastUp = $up; $lastPid = $curPid
     Start-Sleep -Seconds 2
 }
 '@
