@@ -287,12 +287,15 @@ $rpDef = (Get-Command Register-PresenceNotify).Definition
 Check "Presence msgs 'back online' + 'be right back' via Bot API" (($rpDef -match 'back online') -and ($rpDef -match 'be right back') -and ($rpDef -match 'api\.telegram\.org') -and ($rpDef -match '1074'))
 Check "Presence watcher fires on both edges (online + brb)" (($rpDef -match 'Send-Ping \$online') -and ($rpDef -match 'Send-Ping \$brb'))
 Check "Presence -OwnerName param on script + fn" ((((Get-Command $Lite).Parameters.ContainsKey('OwnerName'))) -and ((Get-Command Register-PresenceNotify).Parameters.ContainsKey('OwnerName')))
+# Agent tests deliver the reply to Telegram and report SENT (not PASS).
+$stDef = $StepTest.ToString()
+Check "Agent tests deliver to Telegram + report SENT" (($stDef -match "reply-channel',\s*'telegram'") -and ($stDef -match '--deliver') -and ($stDef -match '\[SENT\]'))
 
 Write-Host "`n== soft-test: $pass passed, $fail failed ==" -ForegroundColor (@('Green','Red')[[int]($fail -gt 0)])
 if ($fail -gt 0) { exit 1 }
 ```
 
-Expected on a clean tree: **76 passed, 0 failed**. A new menu item, a renamed
+Expected on a clean tree: **77 passed, 0 failed**. A new menu item, a renamed
 key, a broken `Enabled`/`Why`, a non-ASCII byte, an accidental BOM, generator
 drift, or a broken unattended path each turns a line red.
 

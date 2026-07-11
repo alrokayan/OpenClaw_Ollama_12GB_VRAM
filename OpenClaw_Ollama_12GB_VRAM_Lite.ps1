@@ -1251,21 +1251,38 @@ $StepTest = {
     ## three prompts run and you can judge tool-calls vs narration from output.
     $ErrorActionPreference = 'Continue'
 
-    Write-Host "These only mean anything if the test suite showed real scrcpy" -ForegroundColor Yellow
-    Write-Host "tools and supportsTools: true." -ForegroundColor Yellow
+    Write-Host "Each test FIRES a prompt to your Telegram (as if you texted the bot)" -ForegroundColor Yellow
+    Write-Host "and reports SENT -- watch the chat for the agent's reply. The adb probe" -ForegroundColor Yellow
+    Write-Host "under each test shows the ACTUAL device state, pass or fail." -ForegroundColor Yellow
 
     $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
     if (-not (Test-Path $adb)) { $adb = (Get-Command adb -ErrorAction SilentlyContinue).Source }
 
-    ## Run one agent prompt with --json, print the model's result (parsed from the
-    ## JSON when a known text field is present, else the raw output), then run a
-    ## $Probe that shows the ACTUAL device state via adb -- so each test shows the
-    ## model's answer AND what really happened on the screen, not just an exit code.
+    ## Run one agent prompt with --json (for the local PASS/FAIL parse) and also
+    ## --deliver the reply to Telegram (--reply-channel/--reply-to $TelegramId), so
+    ## each test answers you IN THE CHAT -- as if you had texted the bot -- not only
+    ## in this terminal. Then run a $Probe that shows the ACTUAL device state via adb,
+    ## so each test shows the model's answer AND what really happened on the screen.
     function Invoke-AgentTest {
         param([string]$Title, [string]$Message, [scriptblock]$Probe)
         Write-Host "`n===== $Title =====" -ForegroundColor Magenta
         Write-Host "  prompt: $Message" -ForegroundColor DarkGray
-        $raw = (openclaw agent --session-key test --message $Message --json 2>&1 | Out-String).Trim()
+        ## --json drives the local check; --deliver routes the reply to your Telegram.
+        $agentArgs = @('agent','--session-key','test','--message',$Message,'--json')
+        if ($TelegramId) {
+            $agentArgs += @('--deliver','--reply-channel','telegram','--reply-to',$TelegramId)
+            Write-Host "  (reply delivered to Telegram chat $TelegramId)" -ForegroundColor DarkGray
+        }
+        $raw = (openclaw @agentArgs 2>&1 | Out-String).Trim()
+        ## Outcome is SENT, not PASS: the reply is delivered to Telegram, so the
+        ## CLI cannot judge whether the agent actually succeeded -- only that the
+        ## prompt was dispatched. Watch the chat (and the adb probe) for the truth.
+        if ($TelegramId) {
+            if ($LASTEXITCODE -eq 0) { Write-Host "  [SENT] fired to your Telegram -- watch the chat for the reply" -ForegroundColor Green }
+            else                     { Write-Host "  [NOT SENT] Telegram delivery failed (exit $LASTEXITCODE)" -ForegroundColor Red }
+        } else {
+            Write-Host "  [CLI ONLY] no -TelegramId set, nothing delivered" -ForegroundColor Yellow
+        }
         $shown = $false
         try {
             $o = $raw | ConvertFrom-Json
