@@ -506,22 +506,25 @@ function Patch {
 
 ## ---- Clamp the model's context to $Cap, robustly ----------------
 ## Sets contextWindow, contextTokens, and params.num_ctx on the ollama model
-## entry, ALL equal to $Cap.
+## entry, ALL equal to $Cap, without losing sibling fields or leaving a duplicate.
 ##
-## The write goes through 'openclaw config set --batch-file <file>' -- NEVER a
-## quoted JSON argument on the command line. PowerShell 5.1's native-argument
-## quoting mangles embedded double quotes (openclaw.cmd re-expands %* into node),
-## which corrupts the entry's "id". OpenClaw's merge-by-id then treats the
-## id-less entry as new and APPENDS it (src/config/merge-patch.ts: "merge by id,
-## or append when the id is new"), leaving a DUPLICATE. Two same-id rows and the
-## resolver reads the first (doctor's 262144), so the model runs on CPU. A batch
-## FILE carries the JSON verbatim, sidestepping all shell quoting -- the docs
-## call the batch payload the source of truth.
+## The write goes through the Patch helper ('openclaw config patch --stdin') --
+## NEVER inline JSON as a native-command argument. Passing JSON as an argument is
+## unsafe on Windows PowerShell 5.1: openclaw.cmd re-expands %* into node and the
+## embedded double quotes get stripped, corrupting the entry's "id". OpenClaw
+## then treats the id-less entry as new and APPENDS it (merge-by-id, per
+## src/config/merge-patch.ts), leaving a DUPLICATE; the resolver reads the first
+## (doctor's 262144) and the model runs on CPU. Piping via --stdin carries the
+## JSON verbatim past all shell quoting (portable across 5.1 and PS7), and
+## 'config patch' also clears the protected-path gate that a raw 'config set' on
+## models.* would need --replace for. ('config set --batch-file' is an equivalent
+## file-based route; both beat inline JSON -- see the README Windows-findings.)
 ##
-## We also de-duplicate (a bad run may already have appended a twin) and carry
-## the whole entry forward (preserving compat.supportsTools; losing it stops tool
-## calls). The batch op sets models.providers.ollama.models to the de-duped array
-## -- a replace, no --merge, so duplicates collapse.
+## config patch REPLACES arrays, so read the current entry to carry EVERY field
+## forward -- compat.supportsTools (lose it and the model narrates instead of
+## calling tools), input:["text","image"] (vision, for the screenshot loop),
+## reasoning, cost -- de-dupe by id, set the three context fields, and patch the
+## whole de-duped array back.
 function Set-ModelContextCap {
     param([int]$Cap)
     $models = @(openclaw config get models.providers.ollama.models --json 2>$null | Out-String | ConvertFrom-Json)
@@ -540,19 +543,10 @@ function Set-ModelContextCap {
     if ($m.params.PSObject.Properties.Name -contains 'num_ctx') { $m.params.num_ctx = $Cap }
     else { $m.params | Add-Member -NotePropertyName num_ctx -NotePropertyValue $Cap -Force }
 
-    ## Batch file: [{ path, value }]. UTF-8 no BOM, -Depth deep (nested
-    ## compat/cost/params/input). Written to disk so no quotes hit the shell.
-    ## --replace: models.providers.ollama.models is a PROTECTED path; --replace
-    ## is what authorizes a full replacement of it (config set --help). Batch
-    ## mode happened to accept the write without it, but we pass it explicitly.
-    ## (config patch --stdin + --replace-path is an equivalent stdin-based route.)
-    $batch = @( [ordered]@{ path = 'models.providers.ollama.models'; value = @($dedup) } )
-    $bf = Join-Path $env:TEMP "oc-clamp-$PID.json"
-    [IO.File]::WriteAllText($bf, (ConvertTo-Json $batch -Depth 40), (New-Object Text.UTF8Encoding($false)))
-    try {
-        openclaw config set --batch-file $bf --strict-json --replace
-        if ($LASTEXITCODE -ne 0) { throw "config set --batch-file failed clamping '$Model'." }
-    } finally { Remove-Item $bf -Force -ErrorAction SilentlyContinue }
+    ## Patch the whole (de-duped) models array. -Depth deep: nested
+    ## compat/cost/params/input. Patch pipes it via stdin and dry-runs first.
+    $patchObj = @{ models = @{ providers = @{ ollama = @{ models = @($dedup) } } } }
+    Patch "context clamp to $Cap" (ConvertTo-Json $patchObj -Depth 40)
 }
 
 function Invoke-Step {
@@ -1711,13 +1705,14 @@ $StepReadme = {
     Add-Line "   cache spilled to CPU -- ``ollama ps`` never reaches ``100% GPU``. (PowerShell 7"
     Add-Line "   fixes the quoting; 5.1 is the default this ships for.)"
     Add-Line ""
-    Add-Line "The script clears both: read the entry, de-duplicate by id, set the three context"
-    Add-Line "fields, and write via ``openclaw config set --batch-file <file> --replace`` -- a"
-    Add-Line "**file** carries the JSON verbatim, past all shell quoting (the docs call the batch"
-    Add-Line "payload the source of truth), and ``--replace`` authorizes the protected path. It"
-    Add-Line "carries the whole entry forward, preserving ``compat.supportsTools``. (``config"
-    Add-Line "patch --stdin`` + ``--replace-path`` is an equivalent stdin route.) Verify with"
-    Add-Line "``ollama ps``: ``100% GPU`` at your ``num_ctx``."
+    Add-Line "The script clears both by writing through **``openclaw config patch --stdin``** (the"
+    Add-Line "same ``Patch`` helper used everywhere else): it reads the current entry, de-duplicates"
+    Add-Line "by id, sets the three context fields, and patches the whole array back. Piping via"
+    Add-Line "**stdin** carries the JSON verbatim past all shell quoting, and ``config patch`` also"
+    Add-Line "clears the protected-path gate (no ``--replace`` needed). Because it carries the *whole*"
+    Add-Line "entry forward, ``compat.supportsTools`` **and** ``input:[\"text\",\"image\"]`` (the vision"
+    Add-Line "flag the screenshot loop needs) survive the replace. (``config set --batch-file`` is an"
+    Add-Line "equivalent file-based route.) Verify with ``ollama ps``: ``100% GPU`` at your ``num_ctx``."
     Add-Line ""
 
     Add-Line "### Context window"
@@ -1754,6 +1749,7 @@ $StepReadme = {
     Add-Line "| ``spawn EINVAL`` after switching to ``npx.cmd`` | Node cannot spawn ``.cmd`` files directly |"
     Add-Line "| Both | Use ``command: \"cmd.exe\", args: [\"/c\",\"npx\",\"scrcpy-mcp\"]`` |"
     Add-Line "| ``jq: Invalid numeric literal at line 1, column 3`` | PS 5.1's ``>`` redirection writes **UTF-16LE**, not UTF-8 |"
+    Add-Line "| ``config set`` reports success but changes nothing / leaves a duplicate | **JSON passed as a command-line argument**: PowerShell 5.1 strips the embedded quotes before the native exe sees it, so the ``id`` is lost. Pipe JSON via ``--stdin`` or ``--batch-file``, never as an arg. (PS 7 handles args differently; stdin/file is robust on both.) |"
     Add-Line "| Skill silently never loads | ``Set-Content -Encoding utf8`` writes a **BOM**; a BOM before ``---`` breaks YAML frontmatter |"
     Add-Line "| ``Unexpected token 'original'`` parse error | An em dash was decoded as three garbage bytes |"
     Add-Line "| Only the first package installs | ``winget install``/``uninstall`` take **one** id per call |"

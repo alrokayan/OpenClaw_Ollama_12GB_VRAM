@@ -48,15 +48,16 @@ Android-only step scriptblocks, swaps them into the shared menu **by key** with
    overwritten on the next run.
 2. **Respect the invariants in README's "Findings".** They fail *silently*:
    ASCII-only source; UTF-8-no-BOM writes via `[IO.File]::WriteAllText`; never
-   hand-edit `openclaw.json`; the models-array clamp has **two locks** — (a) it's
-   a *protected path*, so a full write needs **`--replace`**; (b) a *quoted JSON
-   argument* is mangled by Windows PowerShell 5.1 (`openclaw.cmd` re-expands `%*`
-   into node), corrupting the `id` so OpenClaw's merge-by-id *appends* an id-less
-   duplicate (`--merge` works by id — the quoting is the bug, and PS 7 fixes it).
-   `Set-ModelContextCap` clears both: it reads + de-dupes + clamps, then writes
-   via **`config set --batch-file <file> --replace`** (a file bypasses shell
-   quoting), preserving `compat.supportsTools`. `config patch --stdin` +
-   `--replace-path` is an equivalent stdin route;
+   hand-edit `openclaw.json`; **never pass JSON as a native-command argument** —
+   Windows PowerShell 5.1 strips the embedded quotes (`openclaw.cmd` re-expands
+   `%*` into node), corrupting the entry's `id`, so OpenClaw's merge-by-id
+   *appends* an id-less duplicate (`--merge` is fine — merges by id; the quoting
+   is the bug, and PS 7 fixes it). Always **pipe via `--stdin`** (or `--batch-file`).
+   `Set-ModelContextCap` reads + de-dupes + clamps, then writes through the
+   **`Patch` helper (`config patch --stdin`)** — the house pattern; it also
+   clears the protected-path gate that a raw `config set models.*` would need
+   `--replace` for, and it carries every field forward so `compat.supportsTools`
+   and `input:["text","image"]` (vision) survive the array replace;
    `num_ctx`, `contextTokens`, and `contextWindow` all set equal (per-model);
    token in `~/.openclaw/.env`;
    `cmd.exe /c npx` for MCP; `ConvertTo-Json -Depth 10`; `Add-Member` for absent
@@ -248,8 +249,9 @@ Check "StepXapk uses AutoXapkPath"          ($StepXapk.ToString()      -match 'A
 Check "Lite param -StartAvd"                 ($p.ContainsKey('StartAvd'))
 Check "Set-EmulatorGpuPreference defined"    ([bool](Get-Command Set-EmulatorGpuPreference -EA SilentlyContinue))
 Check "StepLaunchAvd pins iGPU + -gpu host"  (($StepLaunchAvd.ToString() -match 'Set-EmulatorGpuPreference') -and ($StepLaunchAvd.ToString() -match "'host'"))
-# Context clamp: writes via --batch-file (bypasses PS 5.1 quote-mangling).
-Check "Set-ModelContextCap uses --batch-file"        ((Get-Command Set-ModelContextCap).Definition -match 'batch-file')
+# Context clamp: writes via config patch --stdin (Patch helper), never inline JSON.
+$scmDef = (Get-Command Set-ModelContextCap).Definition
+Check "Set-ModelContextCap patches via stdin (Patch), no inline config set" (($scmDef -match 'Patch .context clamp') -and ($scmDef -notmatch 'config set models'))
 Check "StepOpenClaw clamps via Set-ModelContextCap"  ($StepOpenClaw.ToString() -match 'Set-ModelContextCap')
 
 Write-Host "`n== soft-test: $pass passed, $fail failed ==" -ForegroundColor (@('Green','Red')[[int]($fail -gt 0)])

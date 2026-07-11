@@ -314,13 +314,14 @@ Clamping the `models` array has **two locks**:
    cache spilled to CPU -- `ollama ps` never reaches `100% GPU`. (PowerShell 7
    fixes the quoting; 5.1 is the default this ships for.)
 
-The script clears both: read the entry, de-duplicate by id, set the three context
-fields, and write via `openclaw config set --batch-file <file> --replace` -- a
-**file** carries the JSON verbatim, past all shell quoting (the docs call the batch
-payload the source of truth), and `--replace` authorizes the protected path. It
-carries the whole entry forward, preserving `compat.supportsTools`. (`config
-patch --stdin` + `--replace-path` is an equivalent stdin route.) Verify with
-`ollama ps`: `100% GPU` at your `num_ctx`.
+The script clears both by writing through **`openclaw config patch --stdin`** (the
+same `Patch` helper used everywhere else): it reads the current entry, de-duplicates
+by id, sets the three context fields, and patches the whole array back. Piping via
+**stdin** carries the JSON verbatim past all shell quoting, and `config patch` also
+clears the protected-path gate (no `--replace` needed). Because it carries the *whole*
+entry forward, `compat.supportsTools` **and** `input:[\
+flag the screenshot loop needs) survive the replace. (`config set --batch-file` is an
+equivalent file-based route.) Verify with `ollama ps`: `100% GPU` at your `num_ctx`.
 
 ### Context window
 
@@ -355,6 +356,7 @@ including the first one.
 | `spawn EINVAL` after switching to `npx.cmd` | Node cannot spawn `.cmd` files directly |
 | Both | Use `command: \
 | `jq: Invalid numeric literal at line 1, column 3` | PS 5.1's `>` redirection writes **UTF-16LE**, not UTF-8 |
+| `config set` reports success but changes nothing / leaves a duplicate | **JSON passed as a command-line argument**: PowerShell 5.1 strips the embedded quotes before the native exe sees it, so the `id` is lost. Pipe JSON via `--stdin` or `--batch-file`, never as an arg. (PS 7 handles args differently; stdin/file is robust on both.) |
 | Skill silently never loads | `Set-Content -Encoding utf8` writes a **BOM**; a BOM before `---` breaks YAML frontmatter |
 | `Unexpected token 'original'` parse error | An em dash was decoded as three garbage bytes |
 | Only the first package installs | `winget install`/`uninstall` take **one** id per call |
