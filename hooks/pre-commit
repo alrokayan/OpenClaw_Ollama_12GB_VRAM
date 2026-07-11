@@ -1,0 +1,21 @@
+#!/bin/sh
+# Pre-commit: run the soft-test before every commit so a broken menu, a non-ASCII
+# byte, or stale generated docs (README/LICENSE/.gitignore/env.example) can never
+# be committed. The soft-test's idempotency check compares the regenerated docs to
+# what is STAGED (git diff, worktree vs index), so committing a correctly
+# regenerated README passes.
+#
+# Activate once per clone:   git config core.hooksPath hooks
+#
+# This protects your clone only, and can be skipped with `git commit --no-verify`.
+# The GitHub Action (.github/workflows/generated-files.yml) enforces the same on
+# push and CANNOT be skipped.
+
+echo "pre-commit: running soft-test..."
+powershell -NoProfile -ExecutionPolicy Bypass -File ./soft-test.ps1
+if [ $? -ne 0 ]; then
+    echo "" >&2
+    echo "pre-commit: soft-test FAILED -- fix it (regenerate the docs and stage them)" >&2
+    echo "before committing. Bypass with 'git commit --no-verify' only if you know why." >&2
+    exit 1
+fi

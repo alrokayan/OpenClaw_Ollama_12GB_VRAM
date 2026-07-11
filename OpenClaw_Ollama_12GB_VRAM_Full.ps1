@@ -141,8 +141,42 @@ $ErrorActionPreference = "Stop"
 ##     Lite records $PSCommandPath as the script to relaunch when it
 ##     elevates. If we did not claim it first, it would relaunch LITE and
 ##     the Android features would vanish without a word.
+##
+##     Run from a FILE, $PSCommandPath is our path and we are done. Run from
+##     MEMORY -- `& ([scriptblock]::Create((irm .../Full.ps1)))` -- it is empty,
+##     so we save OURSELVES to a temp file and point elevation at that. Without
+##     this the UAC relaunch would run the temp Lite copy we fetch below (Lite's
+##     own OC_EntryScript fallback claims it), silently dropping to Lite. This is
+##     what makes the one-line scriptblock installer for Full self-elevate as Full.
 ## ============================================================
-$global:OC_EntryScript = $PSCommandPath
+$FullName = "OpenClaw_Ollama_12GB_VRAM_Full.ps1"
+$FullUrl  = "https://raw.githubusercontent.com/alrokayan/OpenClaw_Ollama_12GB_VRAM/main/$FullName"
+
+if ($PSCommandPath) {
+    $global:OC_EntryScript = $PSCommandPath
+} else {
+    ## Running from memory. If we ever need to elevate we must relaunch FULL, so
+    ## fetch a copy of ourselves now. FAIL LOUD on any problem: relaunching the
+    ## temp Lite copy we fetch below would be a silent capability downgrade (no
+    ## Android) the user cannot see, so we REFUSE rather than fall back. The one
+    ## exception is when we are already elevated -- then no relaunch happens and a
+    ## failed self-save is harmless.
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    $fullTmp = Join-Path $env:TEMP $FullName
+    try {
+        Invoke-WebRequest -Uri $FullUrl -OutFile $fullTmp -UseBasicParsing -ErrorAction Stop
+        Unblock-File $fullTmp -ErrorAction SilentlyContinue
+        $global:OC_EntryScript = $fullTmp
+        Write-Host "Running from memory; saved a copy to relaunch elevated as Full: $fullTmp" -ForegroundColor DarkGray
+    } catch {
+        if ($isAdmin) {
+            Write-Host "Running from memory, already elevated; skipping the self-save." -ForegroundColor DarkGray
+        } else {
+            throw "Cannot continue: running Full from memory, not elevated, and could not fetch Full for an elevated relaunch ($($_.Exception.Message)). Relaunching now would silently drop to the LITE edition (no Android), which you could not see. Open an Administrator PowerShell and run the one-liner again, or use the file-based installer from the README."
+        }
+    }
+}
 $global:OC_EntryArgs   = $PSBoundParameters
 
 ## ============================================================

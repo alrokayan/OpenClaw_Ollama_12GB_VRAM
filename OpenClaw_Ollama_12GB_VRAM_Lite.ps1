@@ -1310,8 +1310,13 @@ $StepTest = {
         param([string]$Title, [string]$Message, [scriptblock]$Probe)
         Write-Host "`n===== $Title =====" -ForegroundColor Magenta
         Write-Host "  prompt: $Message" -ForegroundColor DarkGray
+        ## Fresh session per test: a bloated context (e.g. a giant screenshot
+        ## base64 from an earlier run) must never carry over and choke the model.
+        ## Telegram /reset clears the DM session, NOT this CLI 'test' session, so
+        ## we make a new one each call instead of reusing a fixed key.
+        $sessionKey = "test-" + (Get-Date -Format 'HHmmssfff')
         ## --json drives the local check; --deliver routes the reply to your Telegram.
-        $agentArgs = @('agent','--session-key','test','--message',$Message,'--json')
+        $agentArgs = @('agent','--session-key',$sessionKey,'--message',$Message,'--json')
         if ($TelegramId) {
             $agentArgs += @('--deliver','--reply-channel','telegram','--reply-to',$TelegramId)
             Write-Host "  (reply delivered to Telegram chat $TelegramId)" -ForegroundColor DarkGray
@@ -1346,10 +1351,12 @@ $StepTest = {
         if ($Probe -and $adb) { & $Probe }
     }
 
-    ## 1. Screenshot -- capture the framebuffer via adb (device-side then pull,
-    ##    which is binary-safe; PowerShell '>' would corrupt the PNG).
+    ## 1. Screenshot -- ask in plain language so the agent routes through the
+    ##    DroidClaw send-screen.ps1 path (server-side capture + Telegram media),
+    ##    NOT the scrcpy screenshot tool whose inline base64 floods the 64k context
+    ##    and kills the turn. The adb probe below independently confirms rendering.
     Invoke-AgentTest "1. Screenshot" `
-        'Capture a screenshot of the current device display using the scrcpy-mcp screenshot tool to verify the visual stream is rendering' `
+        'Send me a screenshot of the current phone screen.' `
         {
             $shot = Join-Path $LogDir "agent-screenshot.png"
             & $adb shell screencap -p /sdcard/agent-shot.png 2>$null

@@ -1,0 +1,22 @@
+name: generated-files
+
+# Enforces, for everyone (a pre-commit hook only protects one clone and can be
+# skipped with --no-verify): the two scripts parse and are ASCII-only, the menu
+# is intact in both editions, and the generated docs (README/LICENSE/.gitignore/
+# env.example) are exactly what the generator produces from the current source.
+# soft-test.ps1 regenerates them and fails if anything drifted.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  soft-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: soft-test (structure, encoding, generated-docs drift)
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          .\soft-test.ps1
