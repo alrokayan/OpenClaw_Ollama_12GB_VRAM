@@ -1112,7 +1112,10 @@ $StepTest = {
 
     openclaw agent --session-key test --message 'Capture a screenshot of the current AVD display using "scrcpy-mcp" or "android_automation_agent:read_screen" to verify the visual stream is rendering correctly'
     openclaw agent --session-key test --message 'Execute a Home button key event via ADB to ensure the emulator layout resets to a known state'
-    openclaw agent --session-key test --message 'Open Telegram app, go to Chats, and open any conversation, Type Hi then send'
+    ## Uses the built-in Messages app (com.google.android.apps.messaging), which
+    ## ships on the stock system image -- Telegram is not preinstalled, so an
+    ## agent test that assumes it can never complete the send.
+    openclaw agent --session-key test --message 'Open the built-in Messages app (com.google.android.apps.messaging), start a new conversation, type Hi in the message field, then send'
 }
 
 ## ============================================================
@@ -1497,6 +1500,34 @@ $StepReadme = {
     Add-Line "> Software rendering (``swiftshader_indirect``) drew a blank/white framebuffer on the"
     Add-Line "> build host (RTX 4070 Ti + i7-13700K): the OS booted but nothing painted. Hardware"
     Add-Line "> GL pinned to the Intel iGPU renders reliably and keeps the discrete GPU free."
+    Add-Line ""
+    Add-Line "### Pinning the emulator to the integrated GPU"
+    Add-Line ""
+    Add-Line "The script does this automatically before every launch (``Set-EmulatorGpuPreference``):"
+    Add-Line "it writes a per-app graphics preference so the emulator renders on the **integrated**"
+    Add-Line "GPU while the discrete card's VRAM stays entirely for the model. To do it by hand,"
+    Add-Line "or to verify it:"
+    Add-Line ""
+    Add-Line "1. **Start > Graphics settings** (``ms-settings:display-advancedgraphics``)."
+    Add-Line "2. **Add a Desktop app > Browse**, and add **both** executables:"
+    Add-Line ""
+    Add-Line '```'
+    Add-Line "%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe"
+    Add-Line "%LOCALAPPDATA%\Android\Sdk\emulator\qemu\windows-x86_64\qemu-system-x86_64.exe"
+    Add-Line '```'
+    Add-Line ""
+    Add-Line "3. Click each > **Options** > **Power saving** (this is the integrated GPU) > **Save**."
+    Add-Line "   (Choose *High performance* instead if you have no iGPU and want the discrete card.)"
+    Add-Line "4. In Android Studio's Device Manager, set the AVD's **Graphics = Hardware - GLES 2.0**."
+    Add-Line "5. Relaunch: ``.\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -StartAvd``."
+    Add-Line ""
+    Add-Line "Equivalent to the manual steps, done in one line (what the script runs), for each exe:"
+    Add-Line ""
+    Add-Line '```powershell'
+    Add-Line "New-ItemProperty 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' ``"
+    Add-Line "  -Name `"`$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe`" ``"
+    Add-Line "  -Value 'GpuPreference=1;' -PropertyType String -Force   # 1 = iGPU, 2 = dGPU"
+    Add-Line '```'
     Add-Line ""
 
     ## ---------------- quick start ----------------

@@ -6,7 +6,7 @@ controlled over Telegram.
 
 <https://github.com/alrokayan/OpenClaw_Ollama_12GB_VRAM>
 
-Generated from `OpenClaw_Ollama_12GB_VRAM_Lite.ps1` on 2026-07-10.
+Generated from `OpenClaw_Ollama_12GB_VRAM_Lite.ps1` on 2026-07-11.
 Do not edit by hand -- regenerate with the *Generate README.md, LICENSE, .gitignore* menu item.
 
 ## Disclaimer
@@ -161,6 +161,34 @@ Two ways to start (or restart) the emulator:
 > Software rendering (`swiftshader_indirect`) drew a blank/white framebuffer on the
 > build host (RTX 4070 Ti + i7-13700K): the OS booted but nothing painted. Hardware
 > GL pinned to the Intel iGPU renders reliably and keeps the discrete GPU free.
+
+### Pinning the emulator to the integrated GPU
+
+The script does this automatically before every launch (`Set-EmulatorGpuPreference`):
+it writes a per-app graphics preference so the emulator renders on the **integrated**
+GPU while the discrete card's VRAM stays entirely for the model. To do it by hand,
+or to verify it:
+
+1. **Start > Graphics settings** (`ms-settings:display-advancedgraphics`).
+2. **Add a Desktop app > Browse**, and add **both** executables:
+
+```
+%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe
+%LOCALAPPDATA%\Android\Sdk\emulator\qemu\windows-x86_64\qemu-system-x86_64.exe
+```
+
+3. Click each > **Options** > **Power saving** (this is the integrated GPU) > **Save**.
+   (Choose *High performance* instead if you have no iGPU and want the discrete card.)
+4. In Android Studio's Device Manager, set the AVD's **Graphics = Hardware - GLES 2.0**.
+5. Relaunch: `.\OpenClaw_Ollama_12GB_VRAM_Full.ps1 -StartAvd`.
+
+Equivalent to the manual steps, done in one line (what the script runs), for each exe:
+
+```powershell
+New-ItemProperty 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' `
+  -Name "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" `
+  -Value 'GpuPreference=1;' -PropertyType String -Force   # 1 = iGPU, 2 = dGPU
+```
 
 ## Quick start (recommended)
 
