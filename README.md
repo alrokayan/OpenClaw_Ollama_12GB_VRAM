@@ -190,6 +190,13 @@ New-ItemProperty 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' `
   -Value 'GpuPreference=1;' -PropertyType String -Force   # 1 = iGPU, 2 = dGPU
 ```
 
+Both emulator executables pinned to **Power Saving (the integrated GPU)** in
+Windows Graphics settings:
+
+![emulator.exe pinned to the Intel iGPU](images/iGPU-1.png)
+
+![qemu-system-x86_64.exe pinned to the Intel iGPU](images/iGPU-2.png)
+
 ## Quick start (recommended)
 
 ```powershell
@@ -493,10 +500,14 @@ Edit these at the top of the script before the first run.
 
 ## Menu
 
-Items grey out when their preconditions are unmet; the reason is shown under the cursor.
+Navigate with the arrow keys. The bracket shows a per-step **done mark**
+(`[x]` when that step's outcome is already in place, derived from live state).
+Items grey out when their preconditions are unmet, with the reason shown under
+the cursor. The list is identical in both editions -- Full swaps its Android
+steps in by key, so a step's position never shifts (the `#` column below is that
+stable position).
 
-The numbering is identical in both editions: `[4]` is *Install the AVD* in
-Lite too, just greyed out. Full swaps the real step in by key.
+![The interactive menu](images/menu.png)
 
 | # | Step | Group | Edition | Unavailable when |
 | --- | --- | --- | --- | --- |
@@ -510,12 +521,17 @@ Lite too, just greyed out. Full swaps the real step in by key.
 | 8 | Run the test suite (diagnostics) | USE | both | OpenClaw is not installed (step 7). |
 | 9 | Run the three agent tests | USE | Full | Full edition only. This step needs the Android emulator. |
 | 0 | Install an .xapk / .apk onto the AVD | USE | Full | Full edition only. This step needs the Android emulator. |
-| - | Launch / relaunch the AVD (cold boot) | USE | both | Full edition only. This step needs the Android emulator. |
+| - | Launch / relaunch the AVD (cold boot) | USE | Full | Full edition only. This step needs the Android emulator. |
 | - | Approve paired devices | USE | both | No paired.json yet. Pair a device from the Control UI or Telegram. |
 | - | Status check | USE | both | always available |
 | - | Open the dashboard (Control UI) | USE | both | OpenClaw is not installed (step 7). |
 | - | Generate README.md, LICENSE, .gitignore | USE | both | Only works when run as a file, not piped from the web. |
 | - | Uninstall everything | DANGER | both | Nothing is installed. |
+
+*Status check* output (host, GPUs, virtualization, toolchain, model, device,
+OpenClaw configuration, readiness):
+
+![Status check](images/status.png)
 
 ## Test suite
 
@@ -523,6 +539,8 @@ Ordered so each layer only matters if the one below passed. This is what
 separates *the model refused to call a tool* from *no tools were offered*
 from *no device was attached* -- three failures that look identical from a
 Telegram window.
+
+![The agent tests: model result + adb probe per test](images/tests.png)
 
 - adb on PATH
 - scrcpy on PATH

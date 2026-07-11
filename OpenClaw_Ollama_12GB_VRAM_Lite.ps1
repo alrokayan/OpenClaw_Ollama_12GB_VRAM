@@ -1647,6 +1647,13 @@ $StepReadme = {
     Add-Line "  -Value 'GpuPreference=1;' -PropertyType String -Force   # 1 = iGPU, 2 = dGPU"
     Add-Line '```'
     Add-Line ""
+    Add-Line "Both emulator executables pinned to **Power Saving (the integrated GPU)** in"
+    Add-Line "Windows Graphics settings:"
+    Add-Line ""
+    Add-Line "![emulator.exe pinned to the Intel iGPU](images/iGPU-1.png)"
+    Add-Line ""
+    Add-Line "![qemu-system-x86_64.exe pinned to the Intel iGPU](images/iGPU-2.png)"
+    Add-Line ""
 
     ## ---------------- quick start ----------------
     Add-Line "## Quick start (recommended)"
@@ -1918,10 +1925,14 @@ $StepReadme = {
     ## --- menu, introspected ---
     Add-Line "## Menu"
     Add-Line ""
-    Add-Line "Items grey out when their preconditions are unmet; the reason is shown under the cursor."
+    Add-Line "Navigate with the arrow keys. The bracket shows a per-step **done mark**"
+    Add-Line "(``[x]`` when that step's outcome is already in place, derived from live state)."
+    Add-Line "Items grey out when their preconditions are unmet, with the reason shown under"
+    Add-Line "the cursor. The list is identical in both editions -- Full swaps its Android"
+    Add-Line "steps in by key, so a step's position never shifts (the ``#`` column below is that"
+    Add-Line "stable position)."
     Add-Line ""
-    Add-Line "The numbering is identical in both editions: ``[4]`` is *Install the AVD* in"
-    Add-Line "Lite too, just greyed out. Full swaps the real step in by key."
+    Add-Line "![The interactive menu](images/menu.png)"
     Add-Line ""
     Add-Line "| # | Step | Group | Edition | Unavailable when |"
     Add-Line "| --- | --- | --- | --- | --- |"
@@ -1929,9 +1940,14 @@ $StepReadme = {
         $n = if ($i -lt 9) { "$($i + 1)" } elseif ($i -eq 9) { "0" } else { "-" }
         $raw = if ($script:Items[$i].Why -is [scriptblock]) { & $script:Items[$i].Why } else { $script:Items[$i].Why }
         $why = if ($raw) { ($raw -replace '\|', '\|') } else { "always available" }
-        $ed  = if ($script:Items[$i].Key -in @("hyperv","verify","android","agent","xapk")) { "Full" } else { "both" }
+        $ed  = if ($script:Items[$i].Key -in @("hyperv","verify","android","agent","xapk","launchavd")) { "Full" } else { "both" }
         Add-Line "| $n | $($script:Items[$i].Label) | $($script:Items[$i].Group) | $ed | $why |"
     }
+    Add-Line ""
+    Add-Line "*Status check* output (host, GPUs, virtualization, toolchain, model, device,"
+    Add-Line "OpenClaw configuration, readiness):"
+    Add-Line ""
+    Add-Line "![Status check](images/status.png)"
     Add-Line ""
 
     ## --- test suite, scraped from the source ---
@@ -1941,6 +1957,8 @@ $StepReadme = {
     Add-Line "separates *the model refused to call a tool* from *no tools were offered*"
     Add-Line "from *no device was attached* -- three failures that look identical from a"
     Add-Line "Telegram window."
+    Add-Line ""
+    Add-Line "![The agent tests: model result + adb probe per test](images/tests.png)"
     Add-Line ""
     foreach ($m in [regex]::Matches($src, 'Test-Case\s+"([^"]+)"')) {
         Add-Line "- $($m.Groups[1].Value)"
