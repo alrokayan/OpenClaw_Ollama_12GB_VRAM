@@ -1,10 +1,13 @@
 # Secrets -------------------------------------------------------------
-# The token file this script reads is named "env" (no leading dot).
-# A bare ".env" rule would NOT match it.
-env
+# OpenClaw (2026.6.11) reads ".env" (WITH the dot). The repo tracks the
+# templates (.openclaw/env.example + openclaw.template.json); the FILLED copies
+# you create -- .openclaw/.env and .openclaw/openclaw.json -- hold your tokens
+# and are ignored by the rules below (.env / openclaw.json match at any depth).
 .env
 *.env
 !env.example
+/.openclaw/.env
+/.openclaw/openclaw.json
 secrets
 secrets.*
 

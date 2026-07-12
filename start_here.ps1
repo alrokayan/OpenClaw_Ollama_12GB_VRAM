@@ -8,14 +8,23 @@
 # Nav:  number + Enter to pick; 0 or blank Enter = back/exit; Ctrl+C = quit.
 # Admin: Install + Uninstall self-elevate; Operation + Maintenance run as you.
 
+# Any config.json option can also be passed as an arg (arg > config.json > default):
+#   .\start_here.ps1 -Model llama3.1:8b -NumCtx 65536 -KeepAlive 5m
+param(
+    [string]$Model, [int]$NumCtx, [string]$AvdName,
+    [string]$KeepAlive, [string]$KvCacheType, [string]$FlashAttn
+)
+$OC_Args = @{} + $PSBoundParameters   # capture CLI args before config.json loads
+
 $global:OC_Entry   = $PSCommandPath   # what Ensure-Admin relaunches when elevating
 $global:OC_Sourced = $true            # tell the sections NOT to auto-run their menu
 
-. "$PSScriptRoot\common.ps1"
+. "$PSScriptRoot\common.ps1"          # $Model/$NumCtx/... <- config.json (or defaults)
 . "$PSScriptRoot\install.ps1"
 . "$PSScriptRoot\run.ps1"
 . "$PSScriptRoot\fix.ps1"
 . "$PSScriptRoot\uninstall.ps1"
+Set-ArgOverrides $OC_Args             # CLI args win over config.json
 
 function Menu-Main {
     while ($true) {

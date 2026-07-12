@@ -173,35 +173,130 @@ function Recommend-Model {
     Pause
 }
 
+# --- configure openclaw (ongoing config -- moved here from Install) -----------
+# WinForms dialogs need an STA thread; PowerShell 7 runs MTA by default, where
+# ShowDialog() just HANGS. Run them on a dedicated STA runspace. Return '' on cancel.
+function Pick-Folder ($desc) {
+    $sb = {
+        param($d)
+        Add-Type -AssemblyName System.Windows.Forms
+        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog; $dlg.Description = $d
+        if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dlg.SelectedPath } else { '' }
+    }
+    $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()
+    $p = [powershell]::Create(); $p.Runspace = $rs; [void]$p.AddScript($sb.ToString()).AddArgument($desc)
+    $r = $p.Invoke(); $rs.Close(); $p.Dispose(); "$($r | Select-Object -Last 1)"
+}
+function Pick-File ($title, $filter) {
+    $sb = {
+        param($t, $f)
+        Add-Type -AssemblyName System.Windows.Forms
+        $dlg = New-Object System.Windows.Forms.OpenFileDialog; $dlg.Title = $t; $dlg.Filter = $f
+        if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dlg.FileName } else { '' }
+    }
+    $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()
+    $p = [powershell]::Create(); $p.Runspace = $rs; [void]$p.AddScript($sb.ToString()).AddArgument($title).AddArgument($filter)
+    $r = $p.Invoke(); $rs.Close(); $p.Dispose(); "$($r | Select-Object -Last 1)"
+}
+function Cfg-Patch ($json) {
+    $ErrorActionPreference='Continue'; $json | openclaw config patch --stdin *>$null
+    if (Test-GatewayUp) { openclaw gateway restart *>$null }; $ErrorActionPreference='Stop'
+}
+function Install-Mcp {
+    $spec = Ask "MCP package (e.g. @mobilenext/mobile-mcp@latest; blank=cancel)"; if (-not $spec) { return }
+    $name = Ask "Register it under name" ($spec -replace '.*/','' -replace '@.*','')
+    $ErrorActionPreference='Continue'
+    openclaw mcp set $name ('{"command":"cmd","args":["/c","npx","-y","'+$spec+'"]}')
+    if (Test-GatewayUp) { openclaw gateway restart *>$null }
+    $ErrorActionPreference='Stop'; Ok "MCP '$name' registered."; Pause
+}
+function Install-Skill {
+    $path = Pick-Folder 'Pick the skill folder (has SKILL.md) -- Cancel to type a ClawHub/git ref'
+    $ErrorActionPreference='Continue'
+    if ($path) { openclaw skills install $path }
+    else { $r = Ask "ClawHub/git ref (blank=cancel)"; if ($r) { openclaw skills install $r } }
+    if (Test-GatewayUp) { openclaw gateway restart *>$null }
+    $ErrorActionPreference='Stop'; Pause
+}
+function Set-Token {
+    $t = Ask "Telegram bot token (from @BotFather; blank=cancel)"; if (-not $t) { return }
+    [IO.File]::WriteAllText("$ClawDir\.env", "TELEGRAM_BOT_TOKEN=$t`n", (New-Object Text.UTF8Encoding($false)))
+    if (Test-GatewayUp) { openclaw gateway restart *>$null }; Ok "token written to ~/.openclaw/.env"; Pause
+}
+function Set-Thinking {
+    $l = Ask "Thinking level (off/minimal/low/medium/high)" 'off'
+    Cfg-Patch ('{"agents":{"defaults":{"thinkingDefault":"'+$l+'"}}}'); Ok "thinkingDefault = $l"; Pause
+}
+function Toggle-Memory {
+    $on  = (openclaw config get agents.defaults.memorySearch.enabled 2>$null) -match 'true'
+    $new = (-not $on).ToString().ToLower()
+    Cfg-Patch ('{"agents":{"defaults":{"memorySearch":{"enabled":'+$new+'}}}}'); Ok "memory = $new"; Pause
+}
+function Menu-Configure {
+    while ($true) {
+        Clear-Host; Say "== CONFIGURE OPENCLAW ==" Cyan; Write-Host ""
+        Line 1 "Install an MCP  (you give the package)"        (Test-OpenClaw) 'uninstall'
+        Line 2 "Install a skill (folder picker / ClawHub ref)" (Test-OpenClaw) 'uninstall'
+        Line 3 "Set / reset Telegram bot token"                (Test-OpenClaw) 'uninstall'
+        Line 4 "Set agent thinking level"                      (Test-OpenClaw) 'uninstall'
+        Line 5 "Enable / disable memory"                       (Test-OpenClaw) 'uninstall'
+        Footer
+        $c = Read-Choice 5
+        if ($null -eq $c) { return }
+        switch ($c) { '1' { Install-Mcp } '2' { Install-Skill } '3' { Set-Token } '4' { Set-Thinking } '5' { Toggle-Memory } }
+    }
+}
+
+# --- APK / XAPK onto the running AVD (an operation, not a system install) ------
+function Install-Apk {
+    if ($UseAndroid -and -not (Test-DeviceUp)) { Warn "No booted device -- start the AVD first."; Pause; return }
+    $p = Pick-File 'Select an APK / XAPK' 'Android package (*.apk;*.xapk)|*.apk;*.xapk'
+    if (-not $p) { return }
+    $ErrorActionPreference='Continue'
+    if ($p -match '\.xapk$') {
+        Say ">>> XAPK: extract splits + install-multiple..." Cyan
+        $tmp = Join-Path $env:TEMP ('xapk_' + [IO.Path]::GetFileNameWithoutExtension($p))
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        $zip = "$tmp.zip"; Copy-Item $p $zip -Force; Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+        $apks = (Get-ChildItem $tmp -Filter *.apk).FullName
+        if ($apks) { adb -s emulator-5554 install-multiple -r @apks } else { Warn "no split APKs in the XAPK." }
+    } else { Say ">>> Installing $(Split-Path $p -Leaf)..." Cyan; adb -s emulator-5554 install -r $p }
+    $ErrorActionPreference='Stop'; Pause
+}
+
 function Menu-Operation {
     while ($true) {
         Clear-Host
         Say "== RUN / OPERATION ==" Cyan
         Write-Host ""
-        Line  1 "Status"
-        Line  2 "Clear all cache"                       # TODO(defer)
-        Line  3 "Session Management  ->"
-        Line  4 "Approve all pending devices"           # TODO(defer): exact pairing verb
-        Line  5 "List active skills and MCPs"
-        Line  6 "Open Dashboard GUI"
-        Line  7 "Open TUI"                              # TODO(defer)
-        Line  8 "Restart OpenClaw Gateway"
-        Line  9 "Service Control  ->"
-        Line 10 "Recommend best model for my VRAM (reads MODELS.md)"   # TODO
+        Line  1 "Configure OpenClaw  (opens sub-menu ...)"                    (Test-OpenClaw) 'uninstall'
+        Line  2 "Status"
+        Line  3 "Clear all cache"                       # TODO(defer)
+        Line  4 "Session Management  (opens sub-menu ...)"
+        Line  5 "Approve all pending devices"           # TODO(defer): exact pairing verb
+        Line  6 "List active skills and MCPs"
+        Line  7 "Open Dashboard GUI"
+        Line  8 "Open TUI"                              # TODO(defer)
+        Line  9 "Restart OpenClaw Gateway"
+        Line 10 "Service Control  (opens sub-menu ...)"
+        Line 11 "Recommend best model for my VRAM (reads MODELS.md)"   # TODO
+        if ($UseAndroid) { Line 12 "Install APK / XAPK onto the AVD" (Test-DeviceUp) }
         Footer
-        $c = Read-Choice 10
+        $c = Read-Choice 12
         if ($null -eq $c) { return }
         switch ($c) {
-            '1'  { Show-Status }
-            '2'  { Warn "Clear all cache not wired yet (see tmp-menu.md)."; Pause }
-            '3'  { Menu-Sessions }
-            '4'  { Warn "Approve devices not wired yet (needs the pairing verb)."; Pause }
-            '5'  { List-SkillsMcps }
-            '6'  { Open-Dashboard }
-            '7'  { Warn "Open TUI not wired yet."; Pause }
-            '8'  { Restart-Gateway }
-            '9'  { Menu-Service }
-            '10' { Recommend-Model }
+            '1'  { Menu-Configure }
+            '2'  { Show-Status }
+            '3'  { Warn "Clear all cache not wired yet (see tmp-menu.md)."; Pause }
+            '4'  { Menu-Sessions }
+            '5'  { Warn "Approve devices not wired yet (needs the pairing verb)."; Pause }
+            '6'  { List-SkillsMcps }
+            '7'  { Open-Dashboard }
+            '8'  { Warn "Open TUI not wired yet."; Pause }
+            '9'  { Restart-Gateway }
+            '10' { Menu-Service }
+            '11' { Recommend-Model }
+            '12' { if ($UseAndroid) { Install-Apk } }
         }
     }
 }

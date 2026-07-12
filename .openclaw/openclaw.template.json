@@ -5,52 +5,20 @@
         "adb-shell",
         "avd-management"
       ],
-      "blockStreamingBreak": "text_end",
-      "blockStreamingDefault": "on",
-      "compaction": {
-        "keepRecentTokens": 24000,
-        "maxActiveTranscriptBytes": "20mb",
-        "maxHistoryShare": 0.6,
-        "memoryFlush": {
-          "enabled": true,
-          "forceFlushTranscriptBytes": "2mb",
-          "softThresholdTokens": 6000
-        },
-        "mode": "safeguard",
-        "notifyUser": true,
-        "recentTurnsPreserve": 3,
-        "reserveTokensFloor": 12000,
-        "truncateAfterCompaction": true
-      },
       "experimental": {
         "localModelLean": true
-      },
-      "humanDelay": {
-        "mode": "natural"
       },
       "imageModel": {
         "primary": "ollama/qwen3.5:latest"
       },
       "memorySearch": {
-        "enabled": false,
-        "provider": "openai",
-        "remote": {
-          "baseUrl": "http://127.0.0.1:11434/v1",
-          "apiKey": "ollama",
-          "batch": {
-            "enabled": false
-          }
-        },
-        "fallback": "none",
-        "model": "nomic-embed-text"
+        "enabled": false
       },
       "model": {
         "primary": "ollama/qwen3.5:latest"
       },
       "reasoningDefault": "off",
       "thinkingDefault": "off",
-      "toolProgressDetail": "explain",
-      "verboseDefault": "on",
       "workspace": "C:\\Users\\moham\\.openclaw\\workspace",
       "contextLimits": {
         "toolResultMaxChars": 20000
@@ -89,26 +57,6 @@
       "telegram:6420885035"
     ]
   },
-  "gateway": {
-    "auth": {
-      "mode": "token",
-      "token": "bv165kd8jepfx3oiwc7g9uz0t4lahn2m"
-    },
-    "bind": "loopback",
-    "controlUi": {
-      "allowInsecureAuth": true
-    },
-    "mode": "local",
-    "port": 18789,
-    "tailscale": {
-      "mode": "off",
-      "resetOnExit": false
-    }
-  },
-  "meta": {
-    "lastTouchedAt": "2026-07-12T06:16:43.909Z",
-    "lastTouchedVersion": "2026.6.11"
-  },
   "models": {
     "mode": "merge",
     "providers": {
@@ -116,7 +64,32 @@
         "api": "ollama",
         "apiKey": "ollama-local",
         "baseUrl": "http://127.0.0.1:11434",
+        "contextWindow": 65536,
+        "params": {
+          "num_ctx": 65536
+        },
         "models": [
+          {
+            "id": "gemma4",
+            "name": "gemma4",
+            "api": "ollama",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 8192,
+            "compat": {
+              "supportsUsageInStreaming": true,
+              "supportsTools": true
+            }
+          },
           {
             "id": "qwen3.5:latest",
             "name": "qwen3.5:latest",
@@ -132,55 +105,20 @@
               "cacheRead": 0,
               "cacheWrite": 0
             },
-            "contextWindow": 32768,
-            "contextTokens": 32768,
+            "contextWindow": 65536,
+            "contextTokens": 65536,
             "maxTokens": 8192,
             "params": {
-              "num_ctx": 32768
+              "num_ctx": 65536
             },
             "compat": {
               "supportsUsageInStreaming": true,
               "supportsTools": true
             }
           }
-        ],
-        "contextWindow": 32768,
-        "params": {
-          "num_ctx": 32768
-        }
+        ]
       }
     }
-  },
-  "plugins": {
-    "allow": [
-      "duckduckgo",
-      "ollama",
-      "telegram",
-      "device-pair",
-      "document-extract",
-      "file-transfer"
-    ],
-    "bundledDiscovery": "allowlist",
-    "entries": {
-      "duckduckgo": {
-        "config": {
-          "webSearch": {
-            "region": "us-en",
-            "safeSearch": "off"
-          }
-        },
-        "enabled": true
-      },
-      "ollama": {
-        "enabled": true
-      },
-      "telegram": {
-        "enabled": true
-      }
-    }
-  },
-  "session": {
-    "dmScope": "per-channel-peer"
   },
   "skills": {
     "allowBundled": [
@@ -228,11 +166,5 @@
       "tts",
       "process"
     ]
-  },
-  "wizard": {
-    "lastRunAt": "2026-07-12T06:16:43.691Z",
-    "lastRunCommand": "doctor",
-    "lastRunMode": "local",
-    "lastRunVersion": "2026.6.11"
   }
 }

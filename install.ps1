@@ -5,7 +5,15 @@
 # Every action is a plain function whose body is the real commands -- copy any
 # one out and run it by hand to test.
 
+# Standalone args (arg > config.json > default): .\install.ps1 -Model x -NumCtx 65536
+# Self-referencing defaults so a dot-source from start_here.ps1 does NOT blank them.
+param(
+    [string]$Model = $Model, [int]$NumCtx = $NumCtx, [string]$AvdName = $AvdName,
+    [string]$KeepAlive = $KeepAlive, [string]$KvCacheType = $KvCacheType, [string]$FlashAttn = $FlashAttn
+)
+$OC_Args = @{} + $PSBoundParameters
 if (-not (Get-Command Say -ErrorAction SilentlyContinue)) { . "$PSScriptRoot\common.ps1" }
+Set-ArgOverrides $OC_Args
 
 function Install-HyperV {
     Say ">>> Enabling Hyper-V + Windows Hypervisor Platform..." Cyan
@@ -67,10 +75,65 @@ function Install-Ollama {
 }
 
 function Install-Studio {
-    # TODO(port): winget install Google.AndroidStudio; the human runs the Studio
-    # setup wizard (SDK Command-line Tools); then sdkmanager downloads emulator +
-    # platform-tools + $SysImage. Real commands are in the old StepAndroid.
-    Warn "TODO: install Android Studio + SDK. Not wired yet."
+    # Installs Android Studio, then the SDK: cmdline-tools (via the Studio wizard --
+    # the ONE step that needs a human) + emulator + platform-tools + the system image.
+    # The system-image download is what pulls kernel-ranchu + ramdisk.img; a partial
+    # copy that has only system.img/vendor.img makes the emulator PANIC "missing
+    # kernel file". AVD creation + launch is the separate Install-Avd step.
+    Say ">>> Installing Android Studio + SDK..." Cyan
+    $ErrorActionPreference = 'Continue'   # winget/sdkmanager stream progress to stderr
+
+    $studioExe = "C:\Program Files\Android\Android Studio\bin\studio64.exe"
+    $cmdlineTools = "$SdkPath\cmdline-tools\latest\bin"
+    $sdkMgr = "$cmdlineTools\sdkmanager.bat"
+
+    # 1) Android Studio itself (bundles the SDK Manager + AVD Manager GUIs).
+    if (Test-Path $studioExe) { Ok "Android Studio already installed." }
+    else { winget install -e --id Google.AndroidStudio --accept-source-agreements --accept-package-agreements --wait }
+
+    # 2) SDK command-line tools -- only obtainable through the Studio setup wizard
+    #    (a GUI with no headless entry point). On a re-run they already exist, so
+    #    skip the wizard entirely.
+    if (Test-Path $sdkMgr) {
+        Ok "SDK command-line tools already present; skipping the setup wizard."
+    } else {
+        if (Test-Path $studioExe) {
+            Say ">>> Launching Android Studio to complete SDK setup..." Cyan
+            Start-Process -FilePath $studioExe -Verb RunAs
+        }
+        Say ""
+        Say "==========================================================" Yellow
+        Say "ACTION REQUIRED: finish the Android Studio Setup Wizard." Yellow
+        Say "Then SDK Manager > SDK Tools, enable:" Yellow
+        Say "    Android SDK Command-line Tools (latest)" Yellow
+        Say "    Google USB Driver" Yellow
+        Say "==========================================================" Yellow
+        [void](Read-Host "  -- Press Enter once SDK setup is complete --")
+        if (-not (Test-Path $sdkMgr)) { $ErrorActionPreference = 'Stop'; Die "sdkmanager still missing at $sdkMgr. Finish the wizard (SDK Tools > Command-line Tools), then re-run." }
+    }
+
+    # 3) Persist ANDROID_HOME + PATH (User scope) so adb/emulator/sdkmanager resolve
+    #    in new shells; refresh THIS process too so the download below can run now.
+    $platformTools = "$SdkPath\platform-tools"
+    $emulatorPath  = "$SdkPath\emulator"
+    [Environment]::SetEnvironmentVariable("ANDROID_HOME", $SdkPath, "User")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    foreach ($d in $platformTools, $cmdlineTools, $emulatorPath) { if ($userPath -notlike "*$d*") { $userPath = "$userPath;$d" } }
+    [Environment]::SetEnvironmentVariable("Path", $userPath, "User")
+    $env:ANDROID_HOME = $SdkPath
+    Update-Path   # re-reads Machine+User from the registry (now includes the dirs above)
+
+    # 4) Download the emulator, platform-tools, the platform, and the system image.
+    #    sdkmanager reads license prompts from stdin -- feed 'y'. Gate on exit code
+    #    (native stderr is non-fatal under Continue).
+    Say ">>> Updating SDK tooling..." Cyan
+    & $sdkMgr --update
+    Say ">>> Downloading emulator + platform-tools + system image ($SysImage)..." Cyan
+    (1..20 | ForEach-Object { 'y' }) | & $sdkMgr "emulator" "platform-tools" "platforms;android-37.1" $SysImage
+    if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = 'Stop'; Die "SDK component download failed." }
+
+    $ErrorActionPreference = 'Stop'
+    Ok "Android Studio + SDK ready. Next: '6) Create AVD', then '7) Set iGPU'."
     Pause
 }
 
@@ -96,21 +159,15 @@ function Set-AvdIgpu {
     Pause
 }
 
-function Install-Apk {
-    # TODO(port): pick an .apk/.xapk, then adb install (or install-multiple for a
-    # split .xapk). Real logic in the old StepXapk.
-    Warn "TODO: install an APK/XAPK onto the AVD. Not wired yet."
-    Pause
-}
-
 function Install-OpenClaw {
     Say ">>> Installing OpenClaw..." Cyan
     $ErrorActionPreference = 'Continue'   # npm streams progress to stderr
     if ($UseOllama) {
-        # Local model path: OpenClaw is a plain npm global -- NO Ollama TUI, no
-        # onboarding. Config comes from Copy-Config (step 10); provider = Ollama.
-        npm install -g openclaw@latest
-        if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = 'Stop'; Die "npm install -g openclaw failed." }
+        # Local model path: let Ollama install + launch OpenClaw wired to the model.
+        # This runs OpenClaw's proper setup (incl. bundled plugins) -- a bare
+        # `npm install -g openclaw` skips the postinstall scripts.
+        ollama launch openclaw --model $Model --yes
+        if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = 'Stop'; Die "ollama launch openclaw failed." }
     } else {
         # Cloud path: the official web installer, no onboarding (provider = cloud,
         # set in openclaw.json). Run as a scriptblock so we can pass -NoOnboard.
@@ -123,32 +180,44 @@ function Install-OpenClaw {
     Pause
 }
 
-function Copy-Config {
-    # OPTIONAL fast path: if you filled openclaw.json + .env in the repo (from the
-    # templates), copy them straight into ~/.openclaw -- no onboarding. Token stays
-    # the literal ${TELEGRAM_BOT_TOKEN} in openclaw.json; value only in .env.
-    $srcJson = Join-Path $RepoDir 'openclaw.json'
-    $srcEnv  = Join-Path $RepoDir '.env'
+function Update-Config {
+    # MERGE the repo's .openclaw\ config into ~/.openclaw -- never overwrite.
+    # openclaw.json is layered on via `config patch` (keeps the live gateway token +
+    # ollama base); .env keys are merged (repo wins on conflicts). Then doctor --fix
+    # + gateway restart so the changes take effect. Token stays ${TELEGRAM_BOT_TOKEN}
+    # in openclaw.json; the value lives only in .env.
+    $tpl     = Join-Path $RepoDir '.openclaw'
+    $srcJson = Join-Path $tpl 'openclaw.json'
+    $srcEnv  = Join-Path $tpl '.env'
     if ((Test-Path $srcJson) -and (Test-Path $srcEnv)) {
-        Say ">>> Found repo openclaw.json + .env; copying into $ClawDir..." Cyan
         New-Item -ItemType Directory -Force $ClawDir | Out-Null
-        Copy-Item $srcJson (Join-Path $ClawDir 'openclaw.json') -Force
-        Copy-Item $srcEnv  (Join-Path $ClawDir '.env')          -Force
-        Ok "config copied."
+        $ErrorActionPreference = 'Continue'
+        # openclaw.json: MERGE (patch), don't overwrite -- keeps the live gateway
+        # token. (config patch REPLACES arrays, so the repo models list must carry
+        # every model or it errors "would remove <id>".)
+        Get-Content $srcJson -Raw | openclaw config patch --stdin *> $null
+        Ok "openclaw.json updated"
+        # .env: merge keys (live + repo, repo wins) -- never clobber other vars.
+        $dst = Join-Path $ClawDir '.env'; $map = [ordered]@{}
+        foreach ($f in @($dst, $srcEnv)) {
+            if (Test-Path $f) { foreach ($ln in Get-Content $f) { if ($ln -match '^\s*([^#=]+?)\s*=\s*(.*)$') { $map[$Matches[1]] = $Matches[2] } } }
+        }
+        [IO.File]::WriteAllText($dst, (($map.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
+        Ok ".env updated"
+        openclaw doctor --fix        # visible -- shows what it repaired
+        openclaw gateway restart     # visible -- confirms it came back up
+        $ErrorActionPreference = 'Stop'
+        Ok "OpenClaw configured + restarted."
     } else {
-        Warn "No filled openclaw.json + .env in the repo."
-        Say "  Tip: copy openclaw.template.json -> openclaw.json and env.example -> .env," DarkGray
-        Say "  fill them, and re-run to skip onboarding entirely." DarkGray
-        # TODO(port): interactive fallback -- prompt for token and run onboarding.
-        Warn "Interactive onboarding fallback not wired yet."
+        Warn "openclaw.json + .env are missing in the .openclaw folder of this repo"
+        if (Yes "Create and update them from the templates now so you can fill them in?") {
+            if (-not (Test-Path $srcJson)) { Copy-Item (Join-Path $tpl 'openclaw.template.json') $srcJson }
+            if (-not (Test-Path $srcEnv))  { Copy-Item (Join-Path $tpl 'env.example')            $srcEnv }
+            Ok "created -- edit these, then re-run this step to update them in:"
+            Say "    $srcJson" Green
+            Say "    $srcEnv   <- put your @BotFather token here" Green
+        }
     }
-    Pause
-}
-
-function Menu-Configure {
-    # TODO(port): submenu -- install Mobile-MCP / Context7 / Base64-toolkit /
-    # Mobile Skill, and set token / context7 key / thinking / fast / memory.
-    Warn "TODO: Configure OpenClaw submenu. Not wired yet."
     Pause
 }
 
@@ -165,14 +234,12 @@ function Menu-Install {
         if ($UseAndroid) {
             Line 5 "Install Android Studio + SDK"           (Test-Studio)
             Line 6 "Create AVD ($AvdName)"                  (Test-Avd)
-            Line 7 "Set iGPU for the AVD (recommended)"
-            Line 8 "Install APK / XAPK onto the AVD (optional)"
+            Line 7 "Set iGPU for the AVD (recommended)"     (Test-Igpu)
         }
-        Line  9 ("Install OpenClaw" + $(if ($UseOllama) { '' } else { ' (cloud)' })) (Test-OpenClaw)
-        Line 10 "Create config (copy -> ~/.openclaw)"       (Test-Configured)
-        Line 11 "Configure OpenClaw"
+        Line  8 ("Install OpenClaw" + $(if ($UseOllama) { '' } else { ' (cloud)' })) (Test-OpenClaw)
+        Line  9 "Configure and restart OpenClaw (openclaw.json and .env)"       (Test-Configured)
         Footer
-        $c = Read-Choice 11
+        $c = Read-Choice 9
         if ($null -eq $c) { return }
         switch ($c) {
             '1'  { Install-HyperV }
@@ -182,10 +249,8 @@ function Menu-Install {
             '5'  { if ($UseAndroid) { Install-Studio } }
             '6'  { if ($UseAndroid) { Install-Avd } }
             '7'  { if ($UseAndroid) { Set-AvdIgpu } }
-            '8'  { if ($UseAndroid) { Install-Apk } }
-            '9'  { Install-OpenClaw }
-            '10' { Copy-Config }
-            '11' { Menu-Configure }
+            '8'  { Install-OpenClaw }
+            '9'  { Update-Config }
         }
     }
 }

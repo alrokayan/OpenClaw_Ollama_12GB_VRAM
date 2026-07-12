@@ -22,11 +22,32 @@ $ConfigPath  = Join-Path $RepoDir 'config.json'
 $cfg = if (Test-Path $ConfigPath) { Get-Content $ConfigPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
 function CfgGet ($key, $default) { if ($cfg.PSObject.Properties.Name -contains $key) { $cfg.$key } else { $default } }
 $Model       = CfgGet 'model'          'qwen3.5:latest'
-$NumCtx      = CfgGet 'numCtx'          32768
+$NumCtx      = CfgGet 'numCtx'          65536
 $AvdName     = CfgGet 'avd'             'Pixel_5'
 $KeepAlive   = CfgGet 'keepAlive'       '-1'
 $KvCacheType = CfgGet 'kvCacheType'     'q8_0'
 $FlashAttn   = CfgGet 'flashAttention'  '1'
+
+# Recommended Ollama models for OpenClaw (https://docs.ollama.com/integrations/openclaw)
+# -- the README generator lists these. Cloud names end in ':cloud'.
+#   Cloud:
+#     kimi-k2.5:cloud     -- Multimodal reasoning with subagents
+#     qwen3.5:cloud       -- Reasoning, coding, and agentic tool use with vision
+#     glm-5.1:cloud       -- Reasoning and code generation
+#     minimax-m2.7:cloud  -- Fast, efficient coding and real-world productivity
+#   Local:
+#     gemma4              -- Reasoning and code generation locally (~16 GB VRAM)
+#     qwen3.5             -- Reasoning, coding, and visual understanding locally (~11 GB VRAM)
+
+# Apply CLI args (an entry script's $PSBoundParameters) ON TOP of the config.json
+# values -- precedence becomes: CLI arg > config.json > built-in default. Call it
+# right AFTER dot-sourcing this file. Each key must name one of the vars above
+# (Model, NumCtx, AvdName, KeepAlive, KvCacheType, FlashAttn); -Scope 1 writes them
+# in the caller (entry-script) scope where the sections read them.
+function Set-ArgOverrides ($bound) {
+    if (-not $bound) { return }
+    foreach ($k in $bound.Keys) { Set-Variable -Name $k -Value $bound[$k] -Scope 1 }
+}
 
 # ---------------------------------------------------------------------------
 # Feature flags (all ON by default)
@@ -126,6 +147,7 @@ function Test-Prereqs    { (Have node) -and (Have python3) }
 function Test-Ollama     { Have ollama }
 function Test-Studio     { Test-Path "$SdkPath\cmdline-tools\latest\bin\sdkmanager.bat" }
 function Test-Avd        { Test-Path "$HOME\.android\avd\$AvdName.avd" }
+function Test-Igpu       { $exe = "$SdkPath\emulator\emulator.exe"; [bool](((Get-ItemProperty 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' -Name $exe -ErrorAction SilentlyContinue).$exe) -match 'GpuPreference=1') }
 function Test-OpenClaw   { Have openclaw }
 function Test-Configured { Test-Path "$ClawDir\openclaw.json" }
 function Test-OllamaUp   { try { Invoke-RestMethod 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2 > $null; $true } catch { $false } }
