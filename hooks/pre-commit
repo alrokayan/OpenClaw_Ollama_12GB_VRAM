@@ -1,0 +1,31 @@
+#!/bin/sh
+# Auto-generated docs + soft-test hook for this repo.
+# Install once (per clone):  git config core.hooksPath hooks
+#
+# On every commit it:
+#   1. Regenerates README.md from the scripts (docs.ps1) and stages it, so the
+#      docs can never drift from the code.
+#   2. Soft-tests every *.ps1 for parse errors + non-ASCII bytes and WARNS (never
+#      blocks) -- the commit always proceeds.
+
+# 1) Regenerate README.md and stage it.
+pwsh -NoProfile -File docs.ps1 || echo "pre-commit: docs.ps1 failed -- README not regenerated"
+git add README.md
+
+# 2) Soft-test the scripts (warn only).
+pwsh -NoProfile -Command '
+  $bad = 0
+  Get-ChildItem *.ps1 | ForEach-Object {
+    $e = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$e)
+    $na = @([IO.File]::ReadAllBytes($_.FullName) | Where-Object { $_ -gt 127 }).Count
+    if ($e.Count -or $na) {
+      Write-Host ("  WARN {0}: parse-errors={1} non-ascii={2}" -f $_.Name, $e.Count, $na) -ForegroundColor Yellow
+      $bad++
+    }
+  }
+  if ($bad) { Write-Host "pre-commit: $bad script(s) have parse/ASCII issues (warn only, commit proceeds)." -ForegroundColor Yellow }
+'
+
+# Warn-only: never block the commit.
+exit 0
