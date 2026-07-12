@@ -46,6 +46,16 @@ function Reset-ClawConfig {
     Pause
 }
 
+# Regenerate README.md from the scripts (docs.ps1) -- the same generator the
+# pre-commit hook runs on commit. Use this to preview the docs without committing.
+function Invoke-Readme {
+    $gen = Join-Path $RepoDir 'docs.ps1'
+    if (-not (Test-Path $gen)) { Warn "docs.ps1 not found in the repo."; Pause; return }
+    Say ">>> Regenerating README.md from the scripts ..." Cyan
+    & $gen
+    Pause
+}
+
 function Menu-Maintenance {
     while ($true) {
         Clear-Host
@@ -54,13 +64,15 @@ function Menu-Maintenance {
         Line 1 "Script self-check (parse + ASCII-only)"
         Line 2 "OpenClaw config check (openclaw doctor)"    (Test-OpenClaw) 'uninstall'
         Line 3 "Reset OpenClaw config (openclaw reset)"     (Test-OpenClaw) 'uninstall'
+        Line 4 "Regenerate README.md (from the scripts)"
         Footer
-        $c = Read-Choice 3
+        $c = Read-Choice 4
         if ($null -eq $c) { return }   # 0 / \ / ~ / Esc / blank Enter = back
         switch ($c) {
             '1' { Invoke-SelfCheck }
             '2' { Invoke-Doctor }
             '3' { Reset-ClawConfig }
+            '4' { Invoke-Readme }
         }
     }
 }

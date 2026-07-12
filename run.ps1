@@ -54,6 +54,33 @@ function Restart-Gateway {
     Pause
 }
 
+# --- whole-stack control (one button -- handy around gaming) ------------------
+# Stop frees ALL the VRAM/CPU: the gateway (which also ends the AVD -- the
+# emulator is its child), any straggler emulator/qemu, and the Ollama server
+# (which unloads the keep-alive -1 resident model). Start brings Ollama + gateway
+# back with the tuned env; the AVD is launched on demand, not here.
+function Stop-All {
+    Say ">>> Stopping the whole stack (frees VRAM + CPU for gaming)..." Cyan
+    $ErrorActionPreference = 'Continue'
+    openclaw gateway stop *>$null
+    Get-Process emulator, qemu-system-x86_64, crashpad_handler -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process ollama* -ErrorAction SilentlyContinue | Stop-Process -Force
+    $ErrorActionPreference = 'Stop'
+    Ok "stopped: gateway, AVD, Ollama. VRAM + CPU are free."
+    Pause
+}
+function Start-All {
+    Say ">>> Starting the stack (Ollama, then gateway)..." Cyan
+    $env:OLLAMA_CONTEXT_LENGTH  = "$NumCtx"
+    $env:OLLAMA_KV_CACHE_TYPE   = "$KvCacheType"
+    $env:OLLAMA_FLASH_ATTENTION = "$FlashAttn"
+    $env:OLLAMA_KEEP_ALIVE      = "$KeepAlive"
+    Start-Ollama
+    Start-Gateway
+    Ok "started: Ollama + gateway. (The AVD launches on demand.)"
+    Pause
+}
+
 # --- auto-start on boot (THE permanent fix for "connection refused") ----------
 # The gateway can come up after a reboot while Ollama's daemon does NOT -- then
 # the provider endpoint (:11434) is dead and every agent turn fails. This logon
@@ -61,6 +88,18 @@ function Restart-Gateway {
 # the provider is always live before the agent runs. Needs admin (task register).
 $AutoTask = 'OpenClaw Autostart'
 function Test-AutoStart { [bool](Get-ScheduledTask -TaskName $AutoTask -ErrorAction SilentlyContinue) }
+
+# Ollama's own installer drops Ollama.lnk in the Startup folder, so Ollama serve
+# auto-starts at every logon INDEPENDENT of our Scheduled Task. Fold it into the
+# toggle: OFF -> move the shortcut to a backup so NOTHING launches at boot (clean
+# for gaming); ON -> restore it. Harmless if our task also starts Ollama (a 2nd
+# 'serve' just no-ops on the busy port). No admin needed -- it's the user's folder.
+function Set-OllamaAutoStart ($on) {
+    $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Ollama.lnk'
+    $bak = Join-Path $ClawDir 'Ollama.lnk.disabled'
+    if ($on) { if ((Test-Path $bak) -and -not (Test-Path $lnk)) { Move-Item $bak $lnk -Force } }
+    else     { if (Test-Path $lnk) { New-Item -ItemType Directory -Force $ClawDir | Out-Null; Move-Item $lnk $bak -Force } }
+}
 
 function Enable-AutoStart {
     if (-not (Ensure-Admin)) { return }
@@ -78,6 +117,7 @@ openclaw gateway restart
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $set     = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
     Register-ScheduledTask -TaskName $AutoTask -Action $action -Trigger $trigger -Settings $set -RunLevel Highest -Force | Out-Null
+    Set-OllamaAutoStart $true   # restore Ollama's own boot shortcut if we'd disabled it
     Ok "auto-start enabled -- Ollama + gateway come up at every logon."
     Pause
 }
@@ -85,7 +125,8 @@ openclaw gateway restart
 function Disable-AutoStart {
     if (-not (Ensure-Admin)) { return }
     Unregister-ScheduledTask -TaskName $AutoTask -Confirm:$false -ErrorAction SilentlyContinue
-    Ok "auto-start disabled."
+    Set-OllamaAutoStart $false  # also disable Ollama's own Startup shortcut -> clean boot
+    Ok "auto-start disabled -- Scheduled Task removed + Ollama boot shortcut disabled (clean boot for gaming)."
     Pause
 }
 
@@ -97,22 +138,61 @@ function Menu-Service {
         Row "gateway"    (Test-GatewayUp)
         Row "auto-start" (Test-AutoStart)
         Write-Host ""
-        Line 1 "Start Ollama"      ; Line 2 "Stop Ollama"      ; Line 3 "Restart Ollama"
-        Line 4 "Start gateway"     ; Line 5 "Stop gateway"     ; Line 6 "Restart gateway"
-        Line 7 ("Toggle auto-start on boot  (now: {0})" -f $(if (Test-AutoStart) { 'ON' } else { 'off' }))
+        Line 1 "Start EVERYTHING (Ollama + gateway)"
+        Line 2 "Stop EVERYTHING (gateway + AVD + Ollama)"
+        Line 3 ("Toggle auto-start on boot  (now: {0})" -f $(if (Test-AutoStart) { 'ON' } else { 'off' }))
+        Line 4 "Start Ollama"      ; Line 5 "Stop Ollama"      ; Line 6 "Restart Ollama"
+        Line 7 "Start gateway"     ; Line 8 "Stop gateway"     ; Line 9 "Restart gateway"
         Footer
-        $c = Read-Choice 7
+        $c = Read-Choice 9
         if ($null -eq $c) { return }
         switch ($c) {
-            '1' { if ($UseOllama) { Start-Ollama } ; Pause }
-            '2' { if ($UseOllama) { Stop-Ollama }  ; Pause }
-            '3' { if ($UseOllama) { Restart-Ollama } ; Pause }
-            '4' { Start-Gateway   ; Pause }
-            '5' { Stop-Gateway    ; Pause }
-            '6' { Restart-Gateway }
-            '7' { if (Test-AutoStart) { Disable-AutoStart } else { Enable-AutoStart } }
+            '1' { Start-All }
+            '2' { Stop-All }
+            '3' { if (Test-AutoStart) { Disable-AutoStart } else { Enable-AutoStart } }
+            '4' { if ($UseOllama) { Start-Ollama } ; Pause }
+            '5' { if ($UseOllama) { Stop-Ollama }  ; Pause }
+            '6' { if ($UseOllama) { Restart-Ollama } ; Pause }
+            '7' { Start-Gateway   ; Pause }
+            '8' { Stop-Gateway    ; Pause }
+            '9' { Restart-Gateway }
         }
     }
+}
+
+# --- clean-slate reset (the full-session-reset.ps1 flow) ---------------------
+# Drop the model + its KV/prompt cache by restarting Ollama with the tuned env,
+# wipe the session store (clears stale conversation AND cached skills-prompts),
+# then doctor --fix + gateway restart. Used by BOTH "Clear all cache" and Session
+# Management > "Reset Telegram session". Driven by config.json ($Model/$NumCtx/
+# $KvCacheType/$FlashAttn/$KeepAlive) -- the single source of truth -- in place of
+# the original script's hardcoded qwen3.5 / 32768.
+function Reset-Session {
+    $ErrorActionPreference = 'Continue'
+    Say "== 1/3  Stopping $Model + gateway ==" Cyan
+    ollama stop $Model
+    openclaw gateway stop
+
+    Say "== 2/3  Restarting Ollama (tuned env) + loading $Model ==" Cyan
+    while (ollama ps 2>$null | Select-String ([regex]::Escape($Model))) { Start-Sleep -Milliseconds 300 }
+    $env:OLLAMA_CONTEXT_LENGTH  = "$NumCtx"
+    $env:OLLAMA_KV_CACHE_TYPE   = "$KvCacheType"
+    $env:OLLAMA_FLASH_ATTENTION = "$FlashAttn"
+    $env:OLLAMA_KEEP_ALIVE      = "$KeepAlive"
+    $log = "$env:LOCALAPPDATA\Ollama"
+    Start-Process ollama -ArgumentList 'serve' -WindowStyle Hidden -RedirectStandardError "$log\serve-live.log" -RedirectStandardOutput "$log\serve-out.log"
+    Invoke-RestMethod 'http://127.0.0.1:11434/api/generate' -Method Post -ContentType 'application/json' -Body ('{"model":"' + $Model + '","keep_alive":-1}') | Out-Null
+    while (-not (ollama ps 2>$null | Select-String ([regex]::Escape($Model)))) { Start-Sleep 1 }
+
+    Say "== 3/3  Wiping session store + doctor --fix ==" Cyan
+    $sessions = Join-Path $HOME '.openclaw\agents\main\sessions'
+    if (Test-Path $sessions) { Remove-Item -Recurse -Force $sessions }
+    openclaw doctor --fix
+    openclaw gateway restart *>$null
+    ollama ps
+    $ErrorActionPreference = 'Stop'
+    Ok "Reset complete -- the model loads fresh on the next message."
+    Pause
 }
 
 # --- sessions ----------------------------------------------------------------
@@ -134,13 +214,7 @@ function Menu-Sessions {
             '1' { openclaw sessions list; Pause }
             '2' { openclaw sessions list --json 2>$null | Out-String | Write-Host; Pause }
             '3' { openclaw sessions compact --agent main 2>$null; Ok "compact requested."; Pause }
-            '4' {
-                # TODO(defer): no CLI 'reset' verb -- needs the session-store file
-                # layout (delete the agent:main:telegram entry, then gateway restart).
-                # Investigate live before wiring. See tmp-menu.md.
-                Warn "Reset not wired yet -- needs the session-store layout (see tmp-menu.md)."
-                Pause
-            }
+            '4' { Reset-Session }
         }
         $ErrorActionPreference = 'Stop'
     }
@@ -155,49 +229,65 @@ function List-SkillsMcps {
 }
 function Open-Dashboard { $ErrorActionPreference='Continue'; openclaw dashboard; $ErrorActionPreference='Stop'; Ok "dashboard opened."; Pause }
 
-# TODO: recommend the best model for THIS machine's VRAM.
+# Open the terminal UI attached to the running gateway. Blocks this console until
+# you exit the TUI, then returns to the menu.
+function Open-Tui {
+    $ErrorActionPreference = 'Continue'
+    if (-not (Test-GatewayUp)) { Warn "Gateway is not up -- start it first (Service Control)." }
+    else { Say ">>> Opening the TUI (connected to the gateway). Exit the TUI to return here." Cyan; openclaw tui }
+    $ErrorActionPreference = 'Stop'; Pause
+}
+
+# Approve every PENDING device pairing request via the CLI (house pattern -- do
+# not hand-edit ~/.openclaw/devices/paired.json). `devices list --json` returns
+# { pending:[...], paired:[...] }; `devices approve --latest` clears the newest
+# pending one. Loop, re-listing each pass, and break on no-progress so a --latest
+# that fails to approve can't spin. Then restart the gateway to re-read the table.
+function Approve-Devices {
+    $ErrorActionPreference = 'Continue'
+    if (-not (Test-GatewayUp)) { Warn "Gateway is not up -- start it first (Service Control)."; $ErrorActionPreference='Stop'; Pause; return }
+    Say ">>> Approving pending device pairing requests..." Cyan
+    $n = 0; $prev = -1
+    foreach ($i in 1..20) {
+        $pending = @((openclaw devices list --json 2>$null | Out-String | ConvertFrom-Json).pending)
+        if ($pending.Count -eq 0) { break }
+        if ($pending.Count -eq $prev) { Warn "no progress -- approve manually: openclaw devices approve <requestId>"; break }
+        $prev = $pending.Count
+        openclaw devices approve --latest *>$null
+        $n++
+    }
+    if ($n -gt 0) { Ok "approved $n pending device(s)."; openclaw gateway restart *>$null } else { Ok "no pending devices to approve." }
+    $ErrorActionPreference = 'Stop'; Pause
+}
+
+# Print Ollama's recommended models for OpenClaw (the catalog carried in
+# config.json's _recommendedModels, sourced from the docs URL below). No VRAM
+# math -- just the list + the reference so you can pick a model for config.json.
 function Recommend-Model {
-    # Read MODELS.md (catalog: model, params, quant, layers/kv-heads/head-dim, max
-    # context, quality tier) + detect GPU VRAM, then for each model compute the
-    # largest context that FITS (weights + KV cache; note q8_0 KV cache = ~half of
-    # FP16) and recommend the strongest model that fits with a usable context.
-    # Print the pick + the exact setup to apply:
-    #   ollama pull <model>
-    #   OLLAMA_FLASH_ATTENTION=1 ; OLLAMA_KV_CACHE_TYPE=q8_0
-    #   openclaw num_ctx / contextWindow / contextTokens = <fit>
-    # (Automates the manual VRAM_TABLE.md + q8_0 + 128k-fit work we did by hand.)
     Clear-Host
-    Say "== RECOMMEND MODEL FOR YOUR VRAM ==" Cyan
-    Warn "Not wired yet -- see the TODO in this function."
-    if (-not (Test-Path (Join-Path $RepoDir 'MODELS.md'))) { Warn "MODELS.md not present in the repo yet." }
+    Say "== RECOMMENDED OLLAMA MODELS FOR OPENCLAW ==" Cyan
+    Write-Host ""
+    $rm = $cfg._recommendedModels
+    if ($rm) {
+        Say "  Cloud:" Yellow
+        foreach ($p in $rm.cloud.PSObject.Properties)  { Write-Host ("    {0,-20} {1}" -f $p.Name, $p.Value) }
+        Write-Host ""
+        Say "  Local:" Yellow
+        foreach ($p in $rm.local.PSObject.Properties)  { Write-Host ("    {0,-20} {1}" -f $p.Name, $p.Value) }
+    } else { Warn "config.json has no _recommendedModels block." }
+    Write-Host ""
+    Say "  Source: https://docs.ollama.com/integrations/openclaw#recommended-models" DarkGray
+    Say ("  Current model (config.json): {0}" -f $Model) Green
     Pause
 }
 
 # --- configure openclaw (ongoing config -- moved here from Install) -----------
-# WinForms dialogs need an STA thread; PowerShell 7 runs MTA by default, where
-# ShowDialog() just HANGS. Run them on a dedicated STA runspace. Return '' on cancel.
-function Pick-Folder ($desc) {
-    $sb = {
-        param($d)
-        Add-Type -AssemblyName System.Windows.Forms
-        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog; $dlg.Description = $d
-        if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dlg.SelectedPath } else { '' }
-    }
-    $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()
-    $p = [powershell]::Create(); $p.Runspace = $rs; [void]$p.AddScript($sb.ToString()).AddArgument($desc)
-    $r = $p.Invoke(); $rs.Close(); $p.Dispose(); "$($r | Select-Object -Last 1)"
-}
-function Pick-File ($title, $filter) {
-    $sb = {
-        param($t, $f)
-        Add-Type -AssemblyName System.Windows.Forms
-        $dlg = New-Object System.Windows.Forms.OpenFileDialog; $dlg.Title = $t; $dlg.Filter = $f
-        if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dlg.FileName } else { '' }
-    }
-    $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()
-    $p = [powershell]::Create(); $p.Runspace = $rs; [void]$p.AddScript($sb.ToString()).AddArgument($title).AddArgument($filter)
-    $r = $p.Invoke(); $rs.Close(); $p.Dispose(); "$($r | Select-Object -Last 1)"
-}
+# Path input. GUI file dialogs do not surface from the VS Code integrated terminal
+# (they open behind the editor and hang), so just ask for the full path. Tip:
+# drag-and-drop the file/folder into the terminal to paste its (quoted) path --
+# we trim the surrounding quotes. '' = cancel.
+function Pick-Folder ($desc)          { (Ask "$desc -- full folder path (blank=cancel)").Trim().Trim('"') }
+function Pick-File   ($title, $filter) { (Ask "$title -- full file path (blank=cancel)").Trim().Trim('"') }
 function Cfg-Patch ($json) {
     $ErrorActionPreference='Continue'; $json | openclaw config patch --stdin *>$null
     if (Test-GatewayUp) { openclaw gateway restart *>$null }; $ErrorActionPreference='Stop'
@@ -269,34 +359,38 @@ function Menu-Operation {
         Clear-Host
         Say "== RUN / OPERATION ==" Cyan
         Write-Host ""
-        Line  1 "Configure OpenClaw  (opens sub-menu ...)"                    (Test-OpenClaw) 'uninstall'
-        Line  2 "Status"
-        Line  3 "Clear all cache"                       # TODO(defer)
-        Line  4 "Session Management  (opens sub-menu ...)"
-        Line  5 "Approve all pending devices"           # TODO(defer): exact pairing verb
-        Line  6 "List active skills and MCPs"
-        Line  7 "Open Dashboard GUI"
-        Line  8 "Open TUI"                              # TODO(defer)
-        Line  9 "Restart OpenClaw Gateway"
-        Line 10 "Service Control  (opens sub-menu ...)"
-        Line 11 "Recommend best model for my VRAM (reads MODELS.md)"   # TODO
-        if ($UseAndroid) { Line 12 "Install APK / XAPK onto the AVD" (Test-DeviceUp) }
+        Line  1 "Start EVERYTHING (Ollama + gateway)"
+        Line  2 "Stop EVERYTHING (gateway + AVD + Ollama)"
+        Line  3 "Configure OpenClaw  (opens sub-menu ...)"                    (Test-OpenClaw) 'uninstall'
+        Line  4 "Status"
+        Line  5 "Clear all cache (reload model + wipe sessions)"  (Test-OpenClaw) 'uninstall'
+        Line  6 "Session Management  (opens sub-menu ...)"
+        Line  7 "Approve all pending devices"            (Test-GatewayUp)
+        Line  8 "List active skills and MCPs"
+        Line  9 "Open Dashboard GUI"
+        Line 10 "Open TUI"                                (Test-GatewayUp)
+        Line 11 "Restart OpenClaw Gateway"
+        Line 12 "Service Control  (opens sub-menu ...)"
+        Line 13 "Recommended Ollama models for OpenClaw"
+        if ($UseAndroid) { Line 14 "Install APK / XAPK onto the AVD" (Test-DeviceUp) }
         Footer
-        $c = Read-Choice 12
+        $c = Read-Choice 14
         if ($null -eq $c) { return }
         switch ($c) {
-            '1'  { Menu-Configure }
-            '2'  { Show-Status }
-            '3'  { Warn "Clear all cache not wired yet (see tmp-menu.md)."; Pause }
-            '4'  { Menu-Sessions }
-            '5'  { Warn "Approve devices not wired yet (needs the pairing verb)."; Pause }
-            '6'  { List-SkillsMcps }
-            '7'  { Open-Dashboard }
-            '8'  { Warn "Open TUI not wired yet."; Pause }
-            '9'  { Restart-Gateway }
-            '10' { Menu-Service }
-            '11' { Recommend-Model }
-            '12' { if ($UseAndroid) { Install-Apk } }
+            '1'  { Start-All }
+            '2'  { Stop-All }
+            '3'  { Menu-Configure }
+            '4'  { Show-Status }
+            '5'  { Reset-Session }
+            '6'  { Menu-Sessions }
+            '7'  { Approve-Devices }
+            '8'  { List-SkillsMcps }
+            '9'  { Open-Dashboard }
+            '10' { Open-Tui }
+            '11' { Restart-Gateway }
+            '12' { Menu-Service }
+            '13' { Recommend-Model }
+            '14' { if ($UseAndroid) { Install-Apk } }
         }
     }
 }

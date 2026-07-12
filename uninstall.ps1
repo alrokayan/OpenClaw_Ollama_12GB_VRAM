@@ -44,12 +44,20 @@ function Uninstall-Skill {
 }
 
 function Uninstall-Studio {
-    Say ">>> Uninstalling Android Studio + SDK (AVD IS SAFE)..." Cyan
+    Say ">>> Uninstalling Android Studio + SDK..." Cyan
     $ErrorActionPreference = 'Continue'
     winget uninstall --id Google.AndroidStudio --silent --accept-source-agreements 2>$null
+    # adb.exe (platform-tools) and any emulator/qemu process lock their own files, so
+    # the folder delete below fails while they run. 'adb kill-server' is graceful;
+    # then force any stragglers.
+    $adb = "$SdkPath\platform-tools\adb.exe"
+    if (Test-Path $adb) { & $adb kill-server 2>$null }
+    Get-Process adb, emulator, qemu-system-x86_64, crashpad_handler -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    # Delete the entire SDK (incl. system-images -- the next install re-pulls the
+    # ~8 GB image). AVDs live in ~/.android/avd, NOT here, so they are untouched.
     Remove-Item $SdkPath -Recurse -Force -ErrorAction SilentlyContinue
     $ErrorActionPreference = 'Stop'
-    Ok "Android Studio + SDK removed."
+    Ok "Android Studio + SDK removed (AVDs in ~/.android/avd are untouched)."
     Pause
 }
 

@@ -151,8 +151,13 @@ function Test-Igpu       { $exe = "$SdkPath\emulator\emulator.exe"; [bool](((Get
 function Test-OpenClaw   { Have openclaw }
 function Test-Configured { Test-Path "$ClawDir\openclaw.json" }
 function Test-OllamaUp   { try { Invoke-RestMethod 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2 > $null; $true } catch { $false } }
-function Test-GatewayUp  { openclaw gateway status *> $null; $LASTEXITCODE -eq 0 }
-function Test-DeviceUp   { (adb shell getprop sys.boot_completed 2>$null | Out-String).Trim() -eq '1' }
+# These shell out to native tools that print to stderr / exit non-zero when the
+# gateway or device is DOWN. Under the global $ErrorActionPreference='Stop' that is
+# a TERMINATING error (which *>$null cannot swallow -- it redirects streams, not
+# exceptions), and since these run while DRAWING the menu, one throw breaks the
+# whole menu. Force Continue locally + try/catch so a down service just reads false.
+function Test-GatewayUp  { try { $ErrorActionPreference = 'SilentlyContinue'; openclaw gateway status *> $null; $LASTEXITCODE -eq 0 } catch { $false } }
+function Test-DeviceUp    { try { $ErrorActionPreference = 'SilentlyContinue'; (adb shell getprop sys.boot_completed 2>$null | Out-String).Trim() -eq '1' } catch { $false } }
 function Test-Skill ($m) { [bool](Get-ChildItem "$ClawDir\skills" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$m*" }) }
 
 # ---------------------------------------------------------------------------

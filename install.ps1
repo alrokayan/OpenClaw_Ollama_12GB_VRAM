@@ -104,11 +104,11 @@ function Install-Studio {
         Say ""
         Say "==========================================================" Yellow
         Say "ACTION REQUIRED: finish the Android Studio Setup Wizard." Yellow
-        Say "Then SDK Manager > SDK Tools, enable:" Yellow
-        Say "    Android SDK Command-line Tools (latest)" Yellow
-        Say "    Google USB Driver" Yellow
+        Say "Then: More Actions > SDK Manager > Languages & Frameworks" Yellow
+        Say "Android SDK > SDK Tools > Android SDK Command-line Tools" Yellow
+        Say "Tick the box then OK (Check README.md for more  info)" Yellow
         Say "==========================================================" Yellow
-        [void](Read-Host "  -- Press Enter once SDK setup is complete --")
+        [void](Read-Host "  -- Press Enter once Android SDK Command-line Tools is installed --")
         if (-not (Test-Path $sdkMgr)) { $ErrorActionPreference = 'Stop'; Die "sdkmanager still missing at $sdkMgr. Finish the wizard (SDK Tools > Command-line Tools), then re-run." }
     }
 
@@ -128,18 +128,134 @@ function Install-Studio {
     #    (native stderr is non-fatal under Continue).
     Say ">>> Updating SDK tooling..." Cyan
     & $sdkMgr --update
+
+    # A partial system-image dir (system.img present but NO package.xml -- a manual
+    # copy or an interrupted download) makes sdkmanager install the COMPLETE image
+    # into a sibling 'x86_64-2', leaving the AVD's config.ini pointed at the
+    # kernel-less 'x86_64' -> emulator PANIC. Remove any such incomplete dir first
+    # so the download lands in the expected location.
+    $imgDir = "$SdkPath\system-images\android-37.1\google_apis_ps16k\x86_64"
+    if ((Test-Path "$imgDir\system.img") -and -not (Test-Path "$imgDir\package.xml")) {
+        Warn "removing an incomplete system image at $imgDir (it would misdirect the download to x86_64-2)"
+        Remove-Item $imgDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     Say ">>> Downloading emulator + platform-tools + system image ($SysImage)..." Cyan
     (1..20 | ForEach-Object { 'y' }) | & $sdkMgr "emulator" "platform-tools" "platforms;android-37.1" $SysImage
     if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = 'Stop'; Die "SDK component download failed." }
 
     $ErrorActionPreference = 'Stop'
-    Ok "Android Studio + SDK ready. Next: '6) Create AVD', then '7) Set iGPU'."
+    Ok "Android Studio + SDK ready."
     Pause
 }
 
 function Install-Avd {
-    # TODO(port): avdmanager create avd -n $AvdName -d pixel_5 -k $SysImage --force
-    Warn "TODO: create the $AvdName AVD. Not wired yet."
+    # Create the AVD, write a tuned config.ini, launch it detached, and poll for
+    # boot. avdmanager creates the AVD AND its .ini pointer -- never hand-write
+    # those. 'emulator' only launches AVDs; 'avdmanager' creates them.
+    Say ">>> Creating the $AvdName AVD..." Cyan
+    $ErrorActionPreference = 'Continue'   # avdmanager/adb/emulator spew to stderr
+
+    $avdMgr = "$SdkPath\cmdline-tools\latest\bin\avdmanager.bat"
+    $emu    = "$SdkPath\emulator\emulator.exe"
+    $adb    = "$SdkPath\platform-tools\adb.exe"
+    if (-not (Test-Path $avdMgr)) { $ErrorActionPreference = 'Stop'; Die "avdmanager not found -- run '5) Install Android Studio + SDK' first." }
+    if (-not (Test-Path "$SdkPath\system-images\android-37.1\google_apis_ps16k\x86_64\kernel-ranchu")) {
+        Warn "system image looks incomplete (no kernel-ranchu). '5) Install Android Studio + SDK' pulls it -- the emulator will PANIC without it."
+    }
+    $env:ANDROID_HOME = $SdkPath
+    Update-Path   # so adb/emulator resolve if this runs in a fresh session
+
+    # -d = device profile. "no" answers the "create a custom hardware profile?" prompt.
+    "no" | & $avdMgr create avd -n $AvdName -d "pixel_5" -k $SysImage --force
+    if ($LASTEXITCODE -ne 0) { $ErrorActionPreference = 'Stop'; Die "avdmanager failed to create the AVD." }
+
+    # Opt out of emulator metrics so no first-run prompt blocks the headless launch.
+    $androidCfg = "$HOME\.android"
+    New-Item -ItemType Directory -Force $androidCfg | Out-Null
+    Set-Content "$androidCfg\analytics.settings" '{"userId":"","hasOptedIn":false,"debugDisablePings":true}' -Encoding ascii
+
+    # Tuned config.ini: cold boot every time (snapshots off -- "quick boot" IS
+    # snapshot loading and cannot coexist), hardware GL (software rendered a BLANK
+    # framebuffer on this class of host, breaking the vision loop), 4 cores, 3 GB
+    # RAM. '7) Set iGPU' pins hw.gpu.mode=host to the integrated GPU so the dGPU's
+    # VRAM stays entirely for the model.
+    Say ">>> Writing config.ini..." Cyan
+    $configPath = "$androidCfg\avd\$AvdName.avd\config.ini"
+    $config = @(
+        "AvdId=$AvdName"
+        'PlayStore.enabled=false'
+        'abi.type=x86_64'
+        'avd.ini.displayname=Pixel 5'
+        'avd.ini.encoding=UTF-8'
+        'disk.dataPartition.size=16G'
+        'fastboot.chosenSnapshotFile='
+        'fastboot.forceChosenSnapshotBoot=no'
+        'fastboot.forceColdBoot=yes'
+        'fastboot.forceFastBoot=no'
+        'hw.accelerometer=yes'
+        'hw.arc=false'
+        'hw.audioInput=yes'
+        'hw.battery=yes'
+        'hw.camera.back=virtualscene'
+        'hw.camera.front=emulated'
+        'hw.cpu.arch=x86_64'
+        'hw.cpu.ncore=4'
+        'hw.dPad=no'
+        'hw.device.hash2=MD5:12ab7fcb681cafc1697d019f385bf3b9'
+        'hw.device.manufacturer=Google'
+        'hw.device.name=pixel_5'
+        'hw.gps=yes'
+        'hw.gpu.enabled=yes'
+        'hw.gpu.mode=host'
+        'hw.gyroscope=yes'
+        'hw.initialOrientation=portrait'
+        'hw.keyboard=yes'
+        'hw.keyboard.charmap=qwerty2'
+        'hw.keyboard.lid=yes'
+        'hw.lcd.density=440'
+        'hw.lcd.height=2340'
+        'hw.lcd.width=1080'
+        'hw.mainKeys=no'
+        'hw.ramSize=3072'
+        'hw.sdCard=yes'
+        'hw.sensors.light=yes'
+        'hw.sensors.magnetic_field=yes'
+        'hw.sensors.orientation=yes'
+        'hw.sensors.pressure=yes'
+        'hw.sensors.proximity=yes'
+        'hw.trackBall=no'
+        'image.sysdir.1=system-images\android-37.1\google_apis_ps16k\x86_64\'
+        'runtime.network.latency=none'
+        'runtime.network.speed=full'
+        'sdcard.size=512M'
+        'showDeviceFrame=no'
+        'tag.display=Google APIs'
+        'tag.id=google_apis_ps16k'
+        'target=android-37.1'
+        'vm.heapSize=256'
+    )
+    Set-Content -Path $configPath -Value $config
+
+    # Start-Process, not "& emulator.exe": a console-attached launch ties the
+    # emulator's lifetime to this window. Cold boot, no snapshots, no metrics.
+    Say ">>> Launching $AvdName (detached) + waiting for boot (up to 5 min)..." Cyan
+    Start-Process -FilePath $emu -WindowStyle Hidden -ArgumentList `
+        '-avd',$AvdName,'-gpu','host','-no-snapshot','-no-snapshot-save','-no-snapshot-load','-no-boot-anim','-no-metrics'
+
+    # Never 'adb wait-for-device' (blocks forever if the emulator died). Poll with a
+    # deadline; adb stderr against no device is eaten by 2>$null.
+    & $adb start-server 2>$null
+    $booted = ''
+    $deadline = (Get-Date).AddMinutes(5)
+    while ((Get-Date) -lt $deadline) {
+        $booted = (& $adb shell getprop sys.boot_completed 2>$null | Out-String).Trim()
+        if ($booted -eq '1') { break }
+        Start-Sleep 5
+    }
+    $ErrorActionPreference = 'Stop'
+    if ($booted -ne '1') { Warn "AVD did not report boot_completed within 5 min -- check the emulator window, then retry." }
+    else { & $adb devices; Ok "$AvdName created and booted." }
     Pause
 }
 
@@ -162,6 +278,12 @@ function Set-AvdIgpu {
 function Install-OpenClaw {
     Say ">>> Installing OpenClaw..." Cyan
     $ErrorActionPreference = 'Continue'   # npm streams progress to stderr
+    # npm blocks package install scripts by default on this box (its allow-scripts
+    # policy), which would SKIP OpenClaw's postinstall-bundled-plugins.mjs -> an
+    # incomplete install (no bundled plugins). Allowlist the packages whose scripts
+    # the install needs, user-scope, before EITHER install path runs. If npm's
+    # "allow-scripts" warning later lists new packages, add them here.
+    npm config set allow-scripts=openclaw,@google/genai,protobufjs,tree-sitter-bash --location=user
     if ($UseOllama) {
         # Local model path: let Ollama install + launch OpenClaw wired to the model.
         # This runs OpenClaw's proper setup (incl. bundled plugins) -- a bare
