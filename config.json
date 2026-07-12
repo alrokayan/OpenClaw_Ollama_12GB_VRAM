@@ -1,0 +1,9 @@
+{
+  "_comment": "Tunables for the OpenClaw + Ollama menu scripts. Edit here or via the 'Set model / context' menu step. No secrets go here (token stays in .env).",
+  "model": "qwen3.5:latest",
+  "numCtx": 32768,
+  "avd": "Pixel_5",
+  "keepAlive": "-1",
+  "kvCacheType": "q8_0",
+  "flashAttention": "1"
+}
